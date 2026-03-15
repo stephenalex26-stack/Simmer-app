@@ -1,7 +1,7 @@
 // ── netlify/functions/generate.mjs ──
 // Two endpoints:
 //   POST /api/generate  → text completions (grok-4-1-fast-non-reasoning)
-//   POST /api/vision    → image/receipt processing (grok-2-vision-latest)
+//   POST /api/vision    → image/receipt/PDF processing (grok-2-vision-latest for images, text extraction for PDFs)
 
 const xai = async (apiKey, payload) => {
   const response = await fetch("https://api.x.ai/v1/chat/completions", {
@@ -85,19 +85,21 @@ Be thorough — capture every line item. Normalize item names (e.g. "ORG WHOLE M
         userContent = [
           {
             type: "text",
-            text: `You are reading a grocery order confirmation or receipt in text/email form. Extract every purchased item.
+            text: `You are reading a grocery receipt, order confirmation, or PDF receipt. Extract every purchased item.
+If this is a Costco or warehouse receipt, expand all abbreviations to readable product names.
 Text:
 ${textContent}
 
 Return ONLY valid JSON:
 {
-  "storeName": "store name or null",
+  "storeName": "detected store name or null",
   "date": "YYYY-MM-DD or null",
   "total": "dollar amount string or null",
   "items": [
-    { "name": "item name", "quantity": 1, "price": "dollar amount or null", "category": "one of: Produce, Meat & Seafood, Dairy & Eggs, Bakery, Frozen, Canned & Dry, Snacks, Beverages, Household, Personal Care, Other" }
+    { "name": "full readable item name", "quantity": 1, "price": "dollar amount or null", "category": "one of: Produce, Meat & Seafood, Dairy & Eggs, Bakery, Frozen, Canned & Dry, Snacks, Beverages, Household, Personal Care, Other" }
   ]
-}`,
+}
+Be thorough — include every line item. Normalize all abbreviated names to plain English. Skip tax lines, subtotals, and payment method lines.`,
           },
         ];
       } else {
@@ -115,7 +117,7 @@ Return ONLY valid JSON:
           {
             role: "system",
             content:
-              "You are a receipt parser. You ALWAYS respond with valid JSON only — no markdown, no backticks, no explanation. Your response must start with { and end with }.",
+              "You are an expert receipt and grocery order parser. You handle photo receipts, scanned text, email confirmations, and PDF receipts including Costco warehouse receipts (which use item codes and abbreviated names). You ALWAYS respond with valid JSON only — no markdown, no backticks, no explanation. Your response must start with { and end with }. For Costco PDFs: item descriptions are often abbreviated — expand them to human-readable names (e.g. \"KS BATH TISS\" becomes \"Kirkland Signature Bath Tissue\", \"KS OLIVE OIL\" becomes \"Kirkland Signature Olive Oil\"). Always include every line item — do not skip items. Infer quantities from multipliers like \"2 @\" or \"x2\". For household/Costco items, use categories: Household, Snacks, Beverages, Dairy & Eggs, Meat & Seafood, Produce, Bakery, Frozen, Personal Care, Canned & Dry, Other.",
           },
           { role: "user", content: userContent },
         ],
