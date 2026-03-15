@@ -300,8 +300,7 @@ export default function App(){
         const tc=await page.getTextContent();
         // join items with spacing — preserve table structure as best we can
         const pageText=tc.items.map(item=>item.str).join(' ');
-        fullText+=pageText+'
-';
+        fullText+=pageText+'\n';
       }
       if(!fullText.trim()){
         flash("Couldn't extract text from this PDF — try the photo option");
