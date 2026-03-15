@@ -291,69 +291,92 @@ export default function App(){
   const scanPdf=async(file)=>{
     setScanning(true);setPdfLoading(true);setScannedResult(null);
     try{
+      // detect store from filename immediately
+      const nameLower=file.name.toLowerCase();
+      const storeHint=nameLower.includes('costco')?'Costco':nameLower.includes('sams')?"Sam's Club":null;
+
       const pdfjsLib=await loadPdfJs();
       const arrayBuffer=await file.arrayBuffer();
       const pdfData=new Uint8Array(arrayBuffer);
       const pdf=await pdfjsLib.getDocument({data:pdfData}).promise;
 
-      // ── Strategy 1: extract text ──────────────────────────────────────────
+      // ── Strategy 1: text extraction (fast path) ───────────────────────────
       let fullText='';
-      for(let i=1;i<=pdf.numPages;i++){
-        const page=await pdf.getPage(i);
-        const tc=await page.getTextContent();
-        // preserve column structure by keeping x-position gaps
-        const items=tc.items.sort((a,b)=>b.transform[5]-a.transform[5]||a.transform[4]-b.transform[4]);
-        let prevY=null;let line='';
-        for(const item of items){
-          const y=Math.round(item.transform[5]);
-          if(prevY!==null&&Math.abs(y-prevY)>3){fullText+=line.trim()+'\n';line='';}
-          line+=(item.str||'')+' ';
-          prevY=y;
+      try{
+        for(let i=1;i<=pdf.numPages;i++){
+          const page=await pdf.getPage(i);
+          const tc=await page.getTextContent();
+          const sorted=tc.items.sort((a,b)=>b.transform[5]-a.transform[5]||a.transform[4]-b.transform[4]);
+          let prevY=null;let line='';
+          for(const item of sorted){
+            const y=Math.round(item.transform[5]);
+            if(prevY!==null&&Math.abs(y-prevY)>3){fullText+=line.trim()+'\n';line='';}
+            line+=(item.str||'')+' ';
+            prevY=y;
+          }
+          if(line.trim())fullText+=line.trim()+'\n';
         }
-        if(line.trim())fullText+=line.trim()+'\n';
-      }
+      }catch(textErr){console.warn('Text extraction failed, falling back to image',textErr);}
 
-      const storeHint=file.name.toLowerCase().includes('costco')||fullText.toLowerCase().includes('costco')?'Costco':
-                      file.name.toLowerCase().includes('sams')||fullText.toLowerCase().includes("sam's club")?"Sam's Club":null;
+      const storeFromText=fullText.toLowerCase().includes('costco')?'Costco':
+                          fullText.toLowerCase().includes("sam's club")?"Sam's Club":null;
+      const store=storeHint||storeFromText;
 
-      // if text extraction got meaningful content, use it
-      if(fullText.replace(/\s/g,'').length>100){
+      if(fullText.replace(/\s/g,'').length>150){
+        // good text — send to AI
         setPdfLoading(false);
-        const t=await aiVision({textContent:`PDF RECEIPT (${storeHint||file.name||'store unknown'}):\n\n${fullText.slice(0,10000)}`});
+        const t=await aiVision({textContent:`PDF RECEIPT (${store||file.name||'grocery store'}):\n\n${fullText.slice(0,12000)}`});
         const parsed=JSON.parse(t.replace(/```json|```/g,'').trim());
-        if(storeHint&&!parsed.storeName)parsed.storeName=storeHint;
+        if(store&&!parsed.storeName)parsed.storeName=store;
         setScannedResult(parsed);
-        setScanning(false);return;
+        setScanning(false);setPdfLoading(false);return;
       }
 
-      // ── Strategy 2: render pages as images and use vision API ────────────
-      // Handles PDFs with embedded fonts that block text extraction
+      // ── Strategy 2: render each page as image → vision API ────────────────
+      // Used for Safari "Export as PDF", scanned PDFs, or image-based PDFs
       setPdfLoading(false);
-      let allItems=[];let detectedStore=storeHint;let detectedDate=null;let detectedTotal=null;
-      for(let i=1;i<=Math.min(pdf.numPages,4);i++){
-        const page=await pdf.getPage(i);
-        const viewport=page.getViewport({scale:2.0});
-        const canvas=document.createElement('canvas');
-        canvas.width=viewport.width;canvas.height=viewport.height;
-        const ctx=canvas.getContext('2d');
-        await page.render({canvasContext:ctx,viewport}).promise;
-        const base64=canvas.toDataURL('image/jpeg',0.92).split(',')[1];
-        const t=await aiVision({imageBase64:base64,mimeType:'image/jpeg',
-          prompt:`This is page ${i} of a ${storeHint||'store'} receipt PDF rendered as an image. Extract every purchased item. Return ONLY valid JSON: {"storeName":"name or null","date":"YYYY-MM-DD or null","total":"amount or null","items":[{"name":"full readable name","quantity":1,"price":"amount or null","category":"Produce|Meat & Seafood|Dairy & Eggs|Bakery|Frozen|Canned & Dry|Snacks|Beverages|Household|Personal Care|Other"}]}`});
-        const parsed=JSON.parse(t.replace(/```json|```/g,'').trim());
-        if(parsed.storeName&&!detectedStore)detectedStore=parsed.storeName;
-        if(parsed.date&&!detectedDate)detectedDate=parsed.date;
-        if(parsed.total&&!detectedTotal)detectedTotal=parsed.total;
-        if(parsed.items?.length)allItems=[...allItems,...parsed.items];
+      let allItems=[];let detectedStore=store;let detectedDate=null;let detectedTotal=null;
+      const pagesToScan=Math.min(pdf.numPages,6);
+      for(let i=1;i<=pagesToScan;i++){
+        try{
+          const page=await pdf.getPage(i);
+          // scale 1.5 keeps canvas under ~2MB per page while still readable
+          const viewport=page.getViewport({scale:1.5});
+          const canvas=document.createElement('canvas');
+          canvas.width=viewport.width;
+          canvas.height=viewport.height;
+          const ctx=canvas.getContext('2d');
+          await page.render({canvasContext:ctx,viewport}).promise;
+          // compress to jpeg to keep payload small
+          const base64=canvas.toDataURL('image/jpeg',0.85).split(',')[1];
+          if(!base64)continue;
+          const t=await aiVision({
+            imageBase64:base64,
+            mimeType:'image/jpeg',
+            prompt:`This is page ${i} of ${pagesToScan} of a ${store||'grocery'} receipt. Extract every purchased item — include household supplies, food, snacks, everything. Expand any abbreviations to readable names. Skip tax, subtotal, and payment lines. Return ONLY valid JSON: {"storeName":"store name or null","date":"YYYY-MM-DD or null","total":"dollar amount or null","items":[{"name":"readable item name","quantity":1,"price":"dollar amount or null","category":"Produce|Meat & Seafood|Dairy & Eggs|Bakery|Frozen|Canned & Dry|Snacks|Beverages|Household|Personal Care|Other"}]}`
+          });
+          const parsed=JSON.parse(t.replace(/```json|```/g,'').trim());
+          if(parsed.storeName&&!detectedStore)detectedStore=parsed.storeName;
+          if(parsed.date&&!detectedDate)detectedDate=parsed.date;
+          if(parsed.total&&!detectedTotal)detectedTotal=parsed.total;
+          if(parsed.items?.length)allItems=[...allItems,...parsed.items];
+        }catch(pageErr){console.warn(`Page ${i} failed:`,pageErr);}
       }
+      // deduplicate items by name
+      const seen=new Set();
+      allItems=allItems.filter(item=>{
+        const key=(item.name||'').toLowerCase().trim();
+        if(seen.has(key))return false;
+        seen.add(key);return true;
+      });
       if(!allItems.length){
-        flash("Couldn't read this PDF. Try taking a photo of the receipt instead.");
-        setScanning(false);return;
+        flash("Couldn't read this PDF. Try the 📷 Photo option instead — just take a photo of the receipt.");
+        setScanning(false);setPdfLoading(false);return;
       }
-      setScannedResult({storeName:detectedStore||'Unknown Store',date:detectedDate,total:detectedTotal,items:allItems});
+      setScannedResult({storeName:detectedStore||'Costco',date:detectedDate,total:detectedTotal,items:allItems});
     }catch(e){
       console.error('PDF scan error:',e);
-      flash("Something went wrong reading the PDF. Try the photo or email option.");
+      flash("Couldn't open this PDF. Try the 📷 Photo tab — just snap a photo of the receipt.");
     }
     setScanning(false);setPdfLoading(false);
   };
@@ -991,20 +1014,17 @@ Return valid JSON:
           {scanning&&<div style={{textAlign:"center",marginTop:16}}><div className="dots"><span/><span/><span/></div><p style={{fontSize:13,color:"var(--i3)",marginTop:8}}>Reading receipt...</p></div>}
         </>}
 
-        {/* PDF upload — Costco + any text-based PDF */}
+        {/* PDF upload */}
         {scanTab==="pdf"&&<>
           <input type="file" ref={pdfRef} accept="application/pdf" style={{display:"none"}} onChange={e=>{if(e.target.files[0])scanPdf(e.target.files[0])}}/>
-          <div className="nudge nudge-bl" style={{marginBottom:12}}><b>📄</b><span><b>Costco members:</b> sign in at costco.com → Orders & Returns → find your order → Download PDF Receipt. Then upload it here.</span></div>
           <div className="upload-zone" onClick={()=>pdfRef.current?.click()}>
             <div style={{fontSize:36,marginBottom:8}}>📄</div>
-            <div style={{fontFamily:"var(--hd)",fontSize:16,fontWeight:500,marginBottom:4}}>Upload PDF receipt</div>
-            <div style={{fontSize:13,color:"var(--i3)",marginBottom:4}}>Works with Costco, Sam's Club, and any text-based PDF</div>
-            <div style={{fontSize:11,color:"var(--i4)"}}>PDF must be a digital receipt — not a scanned image</div>
+            <div style={{fontFamily:"var(--hd)",fontSize:16,fontWeight:500,marginBottom:4}}>Upload a PDF receipt</div>
+            <div style={{fontSize:13,color:"var(--i3)"}}>Any store, any format — AI reads it</div>
           </div>
           {(scanning||pdfLoading)&&<div style={{textAlign:"center",marginTop:16}}>
             <div className="dots"><span/><span/><span/></div>
-            <p style={{fontSize:13,color:"var(--i3)",marginTop:8}}>{pdfLoading?"Opening PDF...":scanning?"Reading items — this may take a moment...":""}</p>
-            {scanning&&!pdfLoading&&<p style={{fontSize:11,color:"var(--i4)",marginTop:4}}>AI is scanning each page</p>}
+            <p style={{fontSize:13,color:"var(--i3)",marginTop:8}}>{pdfLoading?"Reading PDF...":"Extracting items..."}</p>
           </div>}
         </>}
 
