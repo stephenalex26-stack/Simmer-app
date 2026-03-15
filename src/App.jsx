@@ -235,6 +235,8 @@ export default function App(){
   const overdue=supplies.filter(s=>{if(!s.last)return false;return(new Date(s.last).getTime()+s.weeks*7*864e5-Date.now())/864e5<0});
 
   const today=DAYS[new Date().getDay()===0?6:new Date().getDay()-1];
+  const activePlan=planView==="next"?nextPlan:plan;
+  const setActivePlan=planView==="next"?sNPl:sPl;
   const todayMeal=plan?.meals?.find(m=>m.day===today);
 
   // ── Store helpers ──
@@ -776,11 +778,7 @@ Return ONLY valid JSON:
       <button className="btn bg" style={{marginBottom:16}} onClick={()=>generate("next")} disabled={loading}>{loading?<><div className="dots" style={{padding:0}}><span/><span/><span/></div> Planning...</>:nextPlan?<>{I.refresh} Regenerate Next Week</>:<>{I.spark} Plan Next Week</>}</button>
     </>}
 
-    {((planView==="this"&&plan)||(planView==="next"&&nextPlan))&&(()=>{
-    const activePlan=planView==="next"?nextPlan:plan;
-    const setActivePlan=planView==="next"?sNPl:sPl;
-    return<>
-    {activePlan&&<>
+    {((planView==="this"&&plan)||(planView==="next"&&nextPlan))&&<>
       {activePlan.savings&&<div className="nudge nudge-sa"><b>💡</b><span>{activePlan.savings}</span></div>}
       {activePlan.supplyReminders?.length>0&&<div className="nudge nudge-am"><b>🏠</b><div>{activePlan.supplyReminders.map((r,i)=><div key={i}>{r}</div>)}</div></div>}
       {activePlan.adventureSuggestion&&<div style={{background:"linear-gradient(135deg,#F5F0FF 0%,#FFF8EE 100%)",border:"1.5px solid #D8C8F0",borderRadius:14,marginBottom:14,overflow:"hidden"}}>
@@ -911,9 +909,7 @@ Return ONLY valid JSON:
           </div>:<button className="swbtn" onClick={e=>{e.stopPropagation();setSwapPicker(i)}}>{I.swap} Swap this meal</button>}
         </div>}
       </div>})}
-    </>
-  })()
-  }
+    </>}
   </>}
 
   {/* ── SHOP ── */}
