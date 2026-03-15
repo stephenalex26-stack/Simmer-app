@@ -3,7 +3,7 @@ import { useState } from "react";
 /*  SIMMER v4 — simmer-app.netlify.app
     Complete rebuild: calm home dashboard for a working mom  */
 
-const LS={r:"sm4-recipes",p:"sm4-prefs",pl:"sm4-plan",s:"sm4-supplies",ck:"sm4-checked",rt:"sm4-ratings"};
+const LS={r:"sm4-recipes",p:"sm4-prefs",pl:"sm4-plan",s:"sm4-supplies",ck:"sm4-checked",rt:"sm4-ratings",pa:"sm4-pantry",hi:"sm4-history"};
 const ld=(k,f)=>{try{const v=localStorage.getItem(k);return v?JSON.parse(v):f}catch{return f}};
 const sv=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch{}};
 
@@ -178,8 +178,13 @@ export default function App(){
   const[onboarded,setOnboarded]=useState(()=>!!ld(LS.p,null));
   const[importText,setImportText]=useState("");
   const[importing,setImporting]=useState(false);
+  const[pantry,setPantry]=useState(()=>ld(LS.pa,["salt","black pepper","olive oil","garlic","butter"]));
+  const[history,setHistory]=useState(()=>ld(LS.hi,[]));
+  const[extraItems,setExtraItems]=useState([]);
+  const[addingItem,setAddingItem]=useState("");
+  const[shopFilter,setShopFilter]=useState("all");
 
-  const sR=v=>{setRecipes(v);sv(LS.r,v)};const sP=v=>{setPrefs(v);sv(LS.p,v)};const sPl=v=>{setPlan(v);sv(LS.pl,v)};const sS=v=>{setSupplies(v);sv(LS.s,v)};const sC=v=>{setChecked(v);sv(LS.ck,v)};const sRt=v=>{setRatings(v);sv(LS.rt,v)};
+  const sR=v=>{setRecipes(v);sv(LS.r,v)};const sP=v=>{setPrefs(v);sv(LS.p,v)};const sPl=v=>{setPlan(v);sv(LS.pl,v)};const sS=v=>{setSupplies(v);sv(LS.s,v)};const sC=v=>{setChecked(v);sv(LS.ck,v)};const sRt=v=>{setRatings(v);sv(LS.rt,v)};const sPa=v=>{setPantry(v);sv(LS.pa,v)};const sHi=v=>{setHistory(v);sv(LS.hi,v)};
   const flash=m=>{setToast(m);setTimeout(()=>setToast(null),2200)};
   const toggleFav=id=>sR(recipes.map(r=>r.id===id?{...r,favorite:!r.favorite}:r));
   const rateMeal=(n,r)=>{sRt({...ratings,[n]:r});flash(r==="loved"?"Added to favorites!":"Will avoid next time")};
@@ -207,6 +212,8 @@ export default function App(){
   const sb=dueSoon.length?`\nSUPPLIES DUE: ${dueSoon.map(s=>s.name).join(", ")}. Include "supplyReminders" array.`:"";
   const prevMeals=plan?.meals?.map(m=>m.name)||[];
   const prevNote=prevMeals.length?`\nLAST PLAN HAD: ${prevMeals.join(", ")}. You MUST pick a DIFFERENT combination this time. Rearrange days and swap at least 2 meals.`:"";
+  const pantryNote=pantry.length?`\nALWAYS IN PANTRY (exclude from shopping list): ${pantry.join(", ")}`:"";
+  const histNote=history.length>1?`\nRECENT WEEKS (don't repeat too much): ${history.slice(-4).map(h=>h.meals.join(", ")).join(" | ")}`:"";
   // detect cuisine preferences from recipe names
   const allNames=recipes.map(r=>r.name).join(" ").toLowerCase();
   const cuisineHints=[];
@@ -228,7 +235,9 @@ ${favs.length?`FAVORITES (use these more): ${favs.join(", ")}`:""}\
 ${loved.length?`\nFAMILY LOVED THESE: ${loved.join(", ")}`:""}\
 ${skip.length?`\nAVOID THESE: ${skip.join(", ")}`:""}\
 ${cuisineHints.length?`\nTHIS FAMILY LIKES: ${cuisineHints.join(", ")} cuisine`:""}\
-${prevNote}
+${prevNote}\
+${pantryNote}\
+${histNote}
 ${sb}
 
 USER'S SAVED RECIPES (use some of these, but also suggest 1-2 NEW recipes from your knowledge that fit this family's taste):
@@ -250,10 +259,13 @@ Return valid JSON:
 "finish":["Reheat sauce over medium heat","Boil pasta 8 min","Toss and serve with parmesan"],
 "shared":["rice","bell peppers"]}],
 "prepGuide":{"minutes":75,"steps":["Cook 6 cups rice in rice cooker","Slice 3 bell peppers into strips","Dice 2 onions","Season and marinate chicken with 2 tbsp oil + fajita seasoning","Brown 1 lb ground beef, drain fat","Make teriyaki glaze: whisk soy sauce + honey + vinegar","Cool and store everything in labeled containers"]},
-"shoppingList":{"Produce":["3 bell peppers (Mon + Wed)","2 onions (Mon + Tue)"],"Meat & Seafood":["1.5 lb chicken thighs","1 lb ground beef"],"Dairy":["1/2 cup parmesan"],"Pantry":["1 lb spaghetti","soy sauce"],"Other":[]},
+"shoppingList":{"Vegetables":["3 bell peppers (Mon + Wed)","2 onions"],"Fruits":[],"Meat & Seafood":["1.5 lb chicken thighs","1 lb ground beef"],"Dairy & Eggs":["1/2 cup parmesan"],"Herbs & Spices":["fresh cilantro","cumin"],"Grains & Pasta":["1 lb spaghetti","6 cups rice"],"Canned & Dry":["28oz crushed tomatoes","2 cans black beans"],"Condiments & Oils":["soy sauce","fajita seasoning"],"Frozen":[],"Bakery & Bread":["8 flour tortillas"],"Other":[]},
 "reused":{"bell peppers":["Fajitas","Stir-Fry"],"rice":["Stir-Fry","Taco Bowls"]},
 "supplyReminders":[]}`}]);
-  const parsed=JSON.parse(t.replace(/```json|```/g,"").trim());sPl(parsed);sC({});setExpanded({});setSwapPicker(null);flash("New plan ready!");}catch(e){console.error("Generate error:",e);setError(e.message||"Couldn't generate — try again");}setLoading(false)};
+  const parsed=JSON.parse(t.replace(/```json|```/g,"").trim());sPl(parsed);sC({});setExpanded({});setSwapPicker(null);
+  // save to history for AI learning
+  const newHist=[...history,{date:new Date().toISOString().split("T")[0],meals:parsed.meals?.map(m=>m.name)||[]}].slice(-12);sHi(newHist);
+  flash("New plan ready!");}catch(e){console.error("Generate error:",e);setError(e.message||"Couldn't generate — try again");}setLoading(false)};
 
   // swap meal
   const swapMeal=async(i,name)=>{setSwapping(i);const day=plan.meals[i].day;const r=recipes.find(x=>x.name===name);try{const t=await ai([{role:"user",content:`Write prep + finish for "${name}" for ${day}.\nIngredients: ${r?.ingredients||"use your knowledge"}\nPrep: ${r?.prep||"n/a"}\nFinish: ${r?.finish||"n/a"}\n\nJSON only:\n{"name":"${name}","time":${r?.time||25},"prep":"detailed prep","finish":"detailed finish","shared":[]}`}]);const m=JSON.parse(t.replace(/```json|```/g,"").trim());m.day=day;const nm=[...plan.meals];nm[i]=m;sPl({...plan,meals:nm});setSwapPicker(null);flash(`Swapped to ${name}`);}catch{flash("Try again");}setSwapping(null)};
@@ -368,11 +380,77 @@ Return valid JSON:
 
   {/* ── SHOP ── */}
   {tab==="shop"&&<>
-    <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}><button className="ib" onClick={()=>setTab("home")} style={{marginLeft:-8}}>←</button><h1 className="pg-t">Shopping List</h1></div>
+    <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}><button className="ib" onClick={()=>setTab("home")} style={{marginLeft:-8}}>←</button><h1 className="pg-t">Shopping</h1></div>
     {plan?.shoppingList?<>
-      <div style={{display:"flex",gap:6,marginBottom:16}}><button className="btn bo bsm" onClick={copyList}>{I.copy} Copy</button><button className="btn bo bsm" onClick={printPlan}>🖨 Print</button></div>
-      {Object.entries(plan.shoppingList).filter(([,v])=>v?.length).map(([cat,its])=><div className="shcat" key={cat}><div className="shcat-t">{cat}</div>{its.map((item,i)=>{const k=`${cat}-${i}`;return <div key={k} className={`shrow ${checked[k]?"ck":""}`} onClick={()=>{const n={...checked,[k]:!checked[k]};sC(n)}}><div className="shchk">{checked[k]&&I.check}</div><span style={{fontSize:14}}>{item}</span></div>})}</div>)}
+      {/* actions bar */}
+      <div style={{display:"flex",gap:6,marginBottom:12}}><button className="btn bo bsm" onClick={copyList}>{I.copy} Copy</button><button className="btn bo bsm" onClick={printPlan}>🖨 Print</button></div>
+
+      {/* add custom item */}
+      <div style={{display:"flex",gap:8,marginBottom:16}}>
+        <input className="fi" style={{flex:1}} value={addingItem} onChange={e=>setAddingItem(e.target.value)} placeholder="Add an item..." onKeyDown={e=>{if(e.key==="Enter"&&addingItem.trim()){setExtraItems([...extraItems,{name:addingItem.trim(),cat:"Other"}]);setAddingItem("");flash("Added")}}} />
+        <button className="btn bg bsm" disabled={!addingItem.trim()} onClick={()=>{setExtraItems([...extraItems,{name:addingItem.trim(),cat:"Other"}]);setAddingItem("");flash("Added")}}>Add</button>
+      </div>
+
+      {/* filter tabs */}
+      <div style={{display:"flex",gap:4,marginBottom:14,overflowX:"auto",paddingBottom:4}}>
+        {["all","unchecked","checked"].map(f=><button key={f} className={`dchip ${shopFilter===f?"on":""}`} onClick={()=>setShopFilter(f)} style={{fontSize:12,padding:"6px 12px"}}>{f==="all"?"All":f==="unchecked"?"Need":f==="Done"||"Done"}</button>)}
+      </div>
+
+      {/* shopping categories */}
+      {Object.entries(plan.shoppingList).filter(([,v])=>v?.length).map(([cat,its])=>{
+        const filtered=its.filter((item,i)=>{
+          const k=`${cat}-${i}`;
+          const isChecked=!!checked[k];
+          if(shopFilter==="unchecked")return !isChecked;
+          if(shopFilter==="checked")return isChecked;
+          return true;
+        });
+        if(!filtered.length)return null;
+        return <div className="shcat" key={cat}>
+          <div className="shcat-t">{cat}</div>
+          {its.map((item,i)=>{
+            const k=`${cat}-${i}`;
+            const isChecked=!!checked[k];
+            if(shopFilter==="unchecked"&&isChecked)return null;
+            if(shopFilter==="checked"&&!isChecked)return null;
+            // check if item is in pantry
+            const inPantry=pantry.some(p=>item.toLowerCase().includes(p.toLowerCase()));
+            if(inPantry)return null;
+            return <div key={k} className={`shrow ${isChecked?"ck":""}`}>
+              <div className="shchk" onClick={()=>{const n={...checked,[k]:!checked[k]};sC(n)}}>{isChecked&&I.check}</div>
+              <span style={{fontSize:14,flex:1}} onClick={()=>{const n={...checked,[k]:!checked[k]};sC(n)}}>{item}</span>
+              <button className="ib" style={{width:28,height:28,fontSize:10,color:"var(--i4)"}} title="Already have this" onClick={()=>{const n={...checked,[k]:true};sC(n);flash("Got it")}}>✓</button>
+            </div>
+          })}
+        </div>})}
+
+      {/* extra items added by user */}
+      {extraItems.length>0&&<div className="shcat"><div className="shcat-t">Added Items</div>{extraItems.map((item,i)=>{
+        const k=`extra-${i}`;
+        return <div key={k} className={`shrow ${checked[k]?"ck":""}`} onClick={()=>{const n={...checked,[k]:!checked[k]};sC(n)}}>
+          <div className="shchk">{checked[k]&&I.check}</div>
+          <span style={{fontSize:14,flex:1}}>{item.name}</span>
+          <button className="ib dng" style={{width:28,height:28}} onClick={e=>{e.stopPropagation();setExtraItems(extraItems.filter((_,j)=>j!==i))}}>{I.trash}</button>
+        </div>})}</div>}
+
       {plan.cost&&<p style={{fontSize:13,color:"var(--i3)",textAlign:"center",marginTop:12}}>Estimated: {plan.cost}</p>}
+
+      {/* pantry section */}
+      <div style={{marginTop:24,paddingTop:16,borderTop:"1px solid var(--sd)"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+          <div><div style={{fontFamily:"var(--hd)",fontSize:16,fontWeight:500}}>My Pantry</div><div style={{fontSize:12,color:"var(--i3)"}}>Items here are auto-excluded from shopping lists</div></div>
+        </div>
+        <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:10}}>
+          {pantry.map((item,i)=><div key={i} style={{display:"flex",alignItems:"center",gap:4,padding:"4px 10px",background:"var(--sand)",borderRadius:20,fontSize:12,fontWeight:600,color:"var(--i2)"}}>
+            {item}
+            <button style={{border:"none",background:"none",cursor:"pointer",color:"var(--i4)",fontSize:14,padding:0,lineHeight:1}} onClick={()=>sPa(pantry.filter((_,j)=>j!==i))}>×</button>
+          </div>)}
+        </div>
+        <div style={{display:"flex",gap:8}}>
+          <input className="fi" style={{flex:1,padding:"8px 12px",fontSize:13}} placeholder="Add pantry staple (e.g. cumin, rice vinegar)..." id="pantry-input" onKeyDown={e=>{if(e.key==="Enter"&&e.target.value.trim()){sPa([...pantry,e.target.value.trim()]);e.target.value="";flash("Added to pantry")}}} />
+          <button className="btn bs bsm" onClick={()=>{const el=document.getElementById("pantry-input");if(el?.value.trim()){sPa([...pantry,el.value.trim()]);el.value="";flash("Added to pantry")}}}>Add</button>
+        </div>
+      </div>
     </>:<div style={{textAlign:"center",padding:"40px 20px",color:"var(--i3)"}}><p>Generate a meal plan first to see your shopping list here.</p><button className="btn bg" style={{marginTop:16}} onClick={()=>setTab("plan")}>{I.spark} Go to Plan</button></div>}
   </>}
 
