@@ -151,7 +151,7 @@ html,body{font-family:var(--bd);background:var(--bg);color:var(--ink);-webkit-fo
 
 export default function App(){
   const[recipes,setRecipes]=useState(()=>ld(LS.r,RECIPES));
-  const[prefs,setPrefs]=useState(()=>ld(LS.p,DEF_PREFS));
+  const[prefs,setPrefs]=useState(()=>{const p=ld(LS.p,DEF_PREFS);return{...DEF_PREFS,...p,stores:p.stores&&p.stores.length?p.stores:DEF_PREFS.stores};});
   const[plan,setPlan]=useState(()=>ld(LS.pl,null));
   const[supplies,setSupplies]=useState(()=>ld(LS.s,SUPPLIES));
   const[checked,setChecked]=useState(()=>ld(LS.ck,{}));
@@ -393,6 +393,24 @@ export default function App(){
   };
 
 
+
+  const savePurchase=(result,store)=>{
+    const PANTRY_CATS=["Dairy & Eggs","Canned & Dry","Condiments & Oils","Beverages"];
+    const PANTRY_KEYWORDS=["butter","milk","eggs","olive oil","vegetable oil","salt","pepper","flour","sugar","rice","pasta","soy sauce","vinegar","honey","garlic","onion","broth","stock","canned","beans","lentils","oats","cereal","juice","water","cheese","yogurt","cream","parmesan"];
+    const purchase={id:"p"+Date.now(),date:result.date||new Date().toISOString().split("T")[0],storeName:store||result.storeName||"Unknown Store",total:result.total||null,items:result.items||[]};
+    sPh([purchase,...purchases].slice(0,50));
+    const newPantryItems=[];
+    (result.items||[]).forEach(item=>{
+      const n=(item.name||"").toLowerCase();
+      if(PANTRY_CATS.includes(item.category)||PANTRY_KEYWORDS.some(kw=>n.includes(kw))){
+        const clean=item.name.replace(/,?\s*\d[\d.]*\s*(oz|lb|gal|fl oz|ct|count|pack).*/i,"").replace(/kirkland signature\s*/i,"").trim();
+        if(clean.length>2&&!pantry.some(p=>p.toLowerCase()===clean.toLowerCase()))newPantryItems.push(clean);
+      }
+    });
+    if(newPantryItems.length)sPa([...pantry,...newPantryItems]);
+    setModal(null);setScannedResult(null);setScanText("");setScanStore("");
+    flash("Saved "+purchase.items.length+" items from "+purchase.storeName+(newPantryItems.length?" · "+newPantryItems.length+" added to pantry":""));
+  };
 
   const getPurchaseContext=()=>{
     if(!purchases.length)return"";
@@ -1252,48 +1270,4 @@ function SupplyForm({s,stores,onSave,onClose}){
   </div>
   <div className="mdl-ft"><button className="btn bs" onClick={onClose}>Cancel</button><button className="btn bg" disabled={!n.trim()} onClick={()=>onSave({name:n.trim(),where:w,weeks:+wk||4,last:l||null})}>{s?"Save":"Track"}</button></div></>
 }
-  const savePurchase=(result,store)=>{
-    const PANTRY_CATS=["Dairy & Eggs","Canned & Dry","Condiments & Oils","Beverages"];
-    const PANTRY_KEYWORDS=["butter","milk","eggs","olive oil","vegetable oil","salt","pepper","flour","sugar","rice","pasta","soy sauce","vinegar","honey","garlic","onion","broth","stock","canned","beans","lentils","oats","cereal","juice","water","cheese","yogurt","cream","parmesan"];
-    const purchase={
-      id:"p"+Date.now(),
-      date:result.date||new Date().toISOString().split("T")[0],
-      storeName:store||result.storeName||"Unknown Store",
-      total:result.total||null,
-      items:result.items||[],
-    };
-    const updated=[purchase,...purchases].slice(0,50);
-    sPh(updated);
 
-    // ── Auto-update pantry from purchased items ──────────────────────────
-    // Any item that matches pantry categories or keywords gets added to pantry
-    // so it's auto-excluded from the next shopping list
-    const newPantryItems=[];
-    (result.items||[]).forEach(item=>{
-      const nameLower=(item.name||"").toLowerCase();
-      const isStaple=
-        PANTRY_CATS.includes(item.category)||
-        PANTRY_KEYWORDS.some(kw=>nameLower.includes(kw));
-      if(isStaple){
-        // use a clean short name for pantry — strip sizes and brand noise
-        const cleanName=item.name
-          .replace(/,?\s*\d+(\.\d+)?\s*(oz|lb|gal|fl oz|ct|count|pack).*/i,"")
-          .replace(/kirkland signature\s*/i,"")
-          .trim();
-        if(cleanName.length>2&&!pantry.some(p=>p.toLowerCase()===cleanName.toLowerCase())){
-          newPantryItems.push(cleanName);
-        }
-      }
-    });
-    if(newPantryItems.length>0){
-      sPa([...pantry,...newPantryItems]);
-    }
-
-    // close modal and reset state
-    setModal(null);
-    setScannedResult(null);
-    setScanText("");
-    setScanStore("");
-    const pantryMsg=newPantryItems.length>0?` · ${newPantryItems.length} added to pantry`:"";
-    flash(`Saved ${purchase.items.length} items from ${purchase.storeName}${pantryMsg}`);
-  };
