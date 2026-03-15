@@ -175,11 +175,12 @@ export default function App(){
   const[addingItem,setAddingItem]=useState("");
   const[shopFilter,setShopFilter]=useState("all");
   const[shopView,setShopView]=useState("combined"); // "combined" | "by-store"
-  const[scanTab,setScanTab]=useState("photo"); // "photo" | "text" | "email"
   const[scanText,setScanText]=useState("");
   const[scanning,setScanning]=useState(false);
   const[scannedResult,setScannedResult]=useState(null);
   const[storeInput,setStoreInput]=useState("");
+  const[adventureExpanded,setAdventureExpanded]=useState(false);
+  const[adventureLoading,setAdventureLoading]=useState(false);
   const fileRef=useRef();
   const pdfRef=useRef();
   const[pdfLoading,setPdfLoading]=useState(false);
@@ -264,14 +265,96 @@ export default function App(){
     setScanning(false);
   };
 
+  // ── Smart receipt text parser ─────────────────────────────────────────────
+  // Detects format, parses client-side where possible, AI only for categorization
+  const parseReceiptText=(text)=>{
+    const lines=text.split('\n').map(l=>l.trim()).filter(Boolean);
+    const lower=text.toLowerCase();
+
+    // detect store
+    let storeName=null;
+    if(lower.includes('costco'))storeName='Costco';
+    else if(lower.includes('wegmans'))storeName='Wegmans';
+    else if(lower.includes('whole foods'))storeName='Whole Foods';
+    else if(lower.includes('trader joe'))storeName="Trader Joe's";
+    else if(lower.includes('target'))storeName='Target';
+    else if(lower.includes('walmart'))storeName='Walmart';
+    else if(lower.includes('amazon fresh'))storeName='Amazon Fresh';
+
+    // detect total
+    let total=null;
+    const totalMatch=text.match(/Total[:\s]+\$?([\d,]+\.\d{2})/i);
+    if(totalMatch)total='$'+totalMatch[1];
+
+    // detect date
+    let date=null;
+    const dateMatch=text.match(/(\d{4}-\d{2}-\d{2})|(\w+ \d{1,2},? \d{4})|(\d{1,2}\/\d{1,2}\/\d{2,4})/);
+    if(dateMatch){try{const d=new Date(dateMatch[0]);if(!isNaN(d))date=d.toISOString().split('T')[0];}catch{}}
+
+    // ── Instacart format: "Nx Product Name" ──
+    const instacartPattern=/^(\d+)\s+x\s+(.{8,})$/;
+    const instacartItems=[];
+    for(let i=0;i<lines.length;i++){
+      const m=lines[i].match(instacartPattern);
+      if(!m)continue;
+      const qty=parseInt(m[1]);
+      const name=m[2].trim();
+      // name must contain a real word (not just "8 oz" or "0.35 oz")
+      if(!/[a-zA-Z]{3,}/.test(name))continue;
+      // find the actual paid price in next 8 lines (skip ~~ strikethrough, Item codes, ✓ lines)
+      let price=null;
+      for(let j=i+1;j<Math.min(i+9,lines.length);j++){
+        const l=lines[j];
+        if(l.startsWith('~~')||l.startsWith('Item ')||l.startsWith('✓')||l.startsWith('Save'))continue;
+        const pm=l.match(/^\$(\d+\.\d{2})$/);
+        if(pm){price='$'+pm[1];break;}
+      }
+      instacartItems.push({name,quantity:qty,price,category:'Other'});
+    }
+    if(instacartItems.length>=2)return{storeName,date,total,items:instacartItems,_parsed:true};
+
+    // ── Generic format: return null so AI handles it ──
+    return null;
+  };
+
   const scanTextContent=async()=>{
     if(!scanText.trim())return;
     setScanning(true);setScannedResult(null);
     try{
-      const t=await aiVision({textContent:scanText.trim()});
-      const parsed=JSON.parse(t.replace(/```json|```/g,"").trim());
+      const text=scanText.trim();
+
+      // try client-side parse first — instant, no AI call, no failure risk
+      const clientParsed=parseReceiptText(text);
+      if(clientParsed&&clientParsed.items.length>0){
+        // use AI only to add categories — send just the item names
+        try{
+          const nameList=clientParsed.items.map((it,i)=>`${i}|${it.name}`).join('\n');
+          const catRaw=await ai([{role:'user',content:`Categorize these grocery items. Return ONLY a JSON array where each element is the category for that item index, in order. Categories: Produce, Meat & Seafood, Dairy & Eggs, Bakery, Frozen, Canned & Dry, Snacks, Beverages, Household, Personal Care, Other.\n\n${nameList}\n\nExample response: ["Snacks","Dairy & Eggs","Produce"]`}]);
+          const cats=JSON.parse(catRaw.replace(/```json|```/g,'').trim());
+          if(Array.isArray(cats))clientParsed.items=clientParsed.items.map((it,i)=>({...it,category:cats[i]||'Other'}));
+        }catch(e){/* categories optional, don't fail */}
+        setScannedResult(clientParsed);
+        setScanning(false);return;
+      }
+
+      // fallback: send full text to AI for unknown formats
+      const raw=await aiVision({textContent:text});
+      const cleaned=raw.replace(/```json|```/g,'').trim();
+      const start=cleaned.indexOf('{');const end=cleaned.lastIndexOf('}');
+      if(start===-1||end===-1)throw new Error('No JSON in response');
+      const parsed=JSON.parse(cleaned.slice(start,end+1));
+      if(!parsed.items||!Array.isArray(parsed.items)||parsed.items.length===0)throw new Error('No items found');
+      // auto-detect store if AI missed it
+      if(!parsed.storeName){
+        const l=text.toLowerCase();
+        if(l.includes('costco'))parsed.storeName='Costco';
+        else if(l.includes('wegmans'))parsed.storeName='Wegmans';
+      }
       setScannedResult(parsed);
-    }catch(e){flash("Couldn't parse that — check the text and try again");}
+    }catch(e){
+      console.error('Scan error:',e);
+      flash("Couldn't read that receipt — try copying the full text again");
+    }
     setScanning(false);
   };
 
@@ -288,95 +371,114 @@ export default function App(){
     document.head.appendChild(script);
   });
 
+  // split a tall canvas into chunks so vision API can read each section clearly
+  const canvasToChunks=async(canvas,store,pageNum)=>{
+    const CHUNK_H=1400; // px — fits comfortably in vision API
+    const chunks=Math.ceil(canvas.height/CHUNK_H);
+    const results=[];
+    for(let c=0;c<chunks;c++){
+      const h=Math.min(CHUNK_H,canvas.height-c*CHUNK_H);
+      if(h<=0)break;
+      const slice=document.createElement('canvas');
+      slice.width=canvas.width;slice.height=h;
+      const sCtx=slice.getContext('2d');
+      sCtx.drawImage(canvas,0,c*CHUNK_H,canvas.width,h,0,0,canvas.width,h);
+      const base64=slice.toDataURL('image/jpeg',0.88).split(',')[1];
+      if(!base64||base64.length<100)continue;
+      try{
+        const t=await aiVision({imageBase64:base64,mimeType:'image/jpeg',
+          prompt:`Grocery/store receipt section (page ${pageNum}, chunk ${c+1} of ${chunks}). Extract every line item — food, household, snacks, everything. Expand abbreviations. Skip tax, subtotal, and payment lines. Return ONLY valid JSON: {"storeName":"name or null","date":"YYYY-MM-DD or null","total":"dollar amount or null","items":[{"name":"readable name","quantity":1,"price":"dollar or null","category":"Produce|Meat & Seafood|Dairy & Eggs|Bakery|Frozen|Canned & Dry|Snacks|Beverages|Household|Personal Care|Other"}]}`});
+        const parsed=JSON.parse(t.replace(/```json|```/g,'').trim());
+        results.push(parsed);
+      }catch(e){console.warn(`Chunk ${c+1} failed:`,e);}
+    }
+    return results;
+  };
+
   const scanPdf=async(file)=>{
     setScanning(true);setPdfLoading(true);setScannedResult(null);
     try{
-      // detect store from filename immediately
       const nameLower=file.name.toLowerCase();
       const storeHint=nameLower.includes('costco')?'Costco':nameLower.includes('sams')?"Sam's Club":null;
 
       const pdfjsLib=await loadPdfJs();
       const arrayBuffer=await file.arrayBuffer();
-      const pdfData=new Uint8Array(arrayBuffer);
-      const pdf=await pdfjsLib.getDocument({data:pdfData}).promise;
+      const pdf=await pdfjsLib.getDocument({data:new Uint8Array(arrayBuffer)}).promise;
 
-      // ── Strategy 1: text extraction (fast path) ───────────────────────────
+      // ── Strategy 1: text extraction ───────────────────────────────────────
       let fullText='';
       try{
         for(let i=1;i<=pdf.numPages;i++){
           const page=await pdf.getPage(i);
           const tc=await page.getTextContent();
-          const sorted=tc.items.sort((a,b)=>b.transform[5]-a.transform[5]||a.transform[4]-b.transform[4]);
+          // sort top-to-bottom, left-to-right
+          const sorted=[...tc.items].sort((a,b)=>b.transform[5]-a.transform[5]||a.transform[4]-b.transform[4]);
           let prevY=null;let line='';
           for(const item of sorted){
             const y=Math.round(item.transform[5]);
             if(prevY!==null&&Math.abs(y-prevY)>3){fullText+=line.trim()+'\n';line='';}
-            line+=(item.str||'')+' ';
-            prevY=y;
+            line+=(item.str||'')+' ';prevY=y;
           }
           if(line.trim())fullText+=line.trim()+'\n';
         }
-      }catch(textErr){console.warn('Text extraction failed, falling back to image',textErr);}
+      }catch(e){console.warn('Text extract failed:',e);}
 
       const storeFromText=fullText.toLowerCase().includes('costco')?'Costco':
                           fullText.toLowerCase().includes("sam's club")?"Sam's Club":null;
       const store=storeHint||storeFromText;
 
-      if(fullText.replace(/\s/g,'').length>150){
-        // good text — send to AI
+      if(fullText.replace(/\s/g,'').length>200){
         setPdfLoading(false);
-        const t=await aiVision({textContent:`PDF RECEIPT (${store||file.name||'grocery store'}):\n\n${fullText.slice(0,12000)}`});
+        const t=await aiVision({textContent:`RECEIPT (${store||'store'}):\n\n${fullText.slice(0,12000)}`});
         const parsed=JSON.parse(t.replace(/```json|```/g,'').trim());
         if(store&&!parsed.storeName)parsed.storeName=store;
         setScannedResult(parsed);
         setScanning(false);setPdfLoading(false);return;
       }
 
-      // ── Strategy 2: render each page as image → vision API ────────────────
-      // Used for Safari "Export as PDF", scanned PDFs, or image-based PDFs
+      // ── Strategy 2: render → chunk → vision ───────────────────────────────
+      // Handles Safari "Export as PDF", image-based PDFs, any format
       setPdfLoading(false);
-      let allItems=[];let detectedStore=store;let detectedDate=null;let detectedTotal=null;
-      const pagesToScan=Math.min(pdf.numPages,6);
+      let allResults=[];
+      const pagesToScan=Math.min(pdf.numPages,4);
       for(let i=1;i<=pagesToScan;i++){
         try{
           const page=await pdf.getPage(i);
-          // scale 1.5 keeps canvas under ~2MB per page while still readable
-          const viewport=page.getViewport({scale:1.5});
+          // use scale 2 for sharp text; chunking handles the height
+          const viewport=page.getViewport({scale:2.0});
           const canvas=document.createElement('canvas');
-          canvas.width=viewport.width;
-          canvas.height=viewport.height;
-          const ctx=canvas.getContext('2d');
-          await page.render({canvasContext:ctx,viewport}).promise;
-          // compress to jpeg to keep payload small
-          const base64=canvas.toDataURL('image/jpeg',0.85).split(',')[1];
-          if(!base64)continue;
-          const t=await aiVision({
-            imageBase64:base64,
-            mimeType:'image/jpeg',
-            prompt:`This is page ${i} of ${pagesToScan} of a ${store||'grocery'} receipt. Extract every purchased item — include household supplies, food, snacks, everything. Expand any abbreviations to readable names. Skip tax, subtotal, and payment lines. Return ONLY valid JSON: {"storeName":"store name or null","date":"YYYY-MM-DD or null","total":"dollar amount or null","items":[{"name":"readable item name","quantity":1,"price":"dollar amount or null","category":"Produce|Meat & Seafood|Dairy & Eggs|Bakery|Frozen|Canned & Dry|Snacks|Beverages|Household|Personal Care|Other"}]}`
-          });
-          const parsed=JSON.parse(t.replace(/```json|```/g,'').trim());
-          if(parsed.storeName&&!detectedStore)detectedStore=parsed.storeName;
-          if(parsed.date&&!detectedDate)detectedDate=parsed.date;
-          if(parsed.total&&!detectedTotal)detectedTotal=parsed.total;
-          if(parsed.items?.length)allItems=[...allItems,...parsed.items];
-        }catch(pageErr){console.warn(`Page ${i} failed:`,pageErr);}
+          canvas.width=viewport.width;canvas.height=viewport.height;
+          await page.render({canvasContext:canvas.getContext('2d'),viewport}).promise;
+          const chunks=await canvasToChunks(canvas,store,i);
+          allResults=[...allResults,...chunks];
+        }catch(e){console.warn(`Page ${i} render failed:`,e);}
       }
-      // deduplicate items by name
+
+      // merge all chunk results
+      let allItems=[];let detectedStore=store;let detectedDate=null;let detectedTotal=null;
+      for(const r of allResults){
+        if(r.storeName&&!detectedStore)detectedStore=r.storeName;
+        if(r.date&&!detectedDate)detectedDate=r.date;
+        if(r.total&&!detectedTotal)detectedTotal=r.total;
+        if(r.items?.length)allItems=[...allItems,...r.items];
+      }
+
+      // deduplicate by name
       const seen=new Set();
       allItems=allItems.filter(item=>{
-        const key=(item.name||'').toLowerCase().trim();
-        if(seen.has(key))return false;
-        seen.add(key);return true;
+        const k=(item.name||'').toLowerCase().trim();
+        if(!k||seen.has(k))return false;
+        seen.add(k);return true;
       });
+
       if(!allItems.length){
-        flash("Couldn't read this PDF. Try the 📷 Photo option instead — just take a photo of the receipt.");
+        flash("Couldn't read this PDF — try the 📷 Photo tab instead");
         setScanning(false);setPdfLoading(false);return;
       }
-      setScannedResult({storeName:detectedStore||'Costco',date:detectedDate,total:detectedTotal,items:allItems});
+      setScannedResult({storeName:detectedStore||'Unknown Store',date:detectedDate,total:detectedTotal,items:allItems});
     }catch(e){
       console.error('PDF scan error:',e);
-      flash("Couldn't open this PDF. Try the 📷 Photo tab — just snap a photo of the receipt.");
+      flash("Couldn't read this PDF — try the 📷 Photo tab instead");
     }
     setScanning(false);setPdfLoading(false);
   };
@@ -505,7 +607,7 @@ Return valid JSON:
 "shoppingList":{"Vegetables":["3 bell peppers","2 onions"],"Fruits":[],"Meat & Seafood":["1.5 lb chicken thighs"],"Dairy & Eggs":["1/2 cup parmesan"],"Herbs & Spices":["fresh cilantro"],"Grains & Pasta":["1 lb spaghetti"],"Canned & Dry":["28oz crushed tomatoes"],"Condiments & Oils":["soy sauce"],"Frozen":[],"Bakery & Bread":["8 flour tortillas"],"Other":[]},
 "storeMap":{"3 bell peppers":"${userStores[0]||"Wegmans"}","8 flour tortillas":"${userStores[0]||"Wegmans"}","28oz crushed tomatoes":"${userStores.find(s=>/costco|sam/i.test(s))||userStores[userStores.length-1]||"Costco"}"},
 "reused":{"rice":["Stir-Fry","Taco Bowls"]},
-"adventureSuggestion":{"name":"Chicken Larb","cuisine":"Thai","why":"Your family loves bold flavors and this is bright, herby, and totally different from anything on your usual rotation.","time":25,"teaser":"Ground chicken tossed with toasted rice, lime juice, fish sauce, and fresh herbs — served over rice with crispy lettuce cups."},
+"adventureSuggestion":{"name":"Chicken Larb","cuisine":"Thai","why":"Your family loves bold flavors and this is bright, herby, and totally different from anything on your usual rotation.","time":25,"teaser":"Ground chicken tossed with toasted rice, lime juice, fish sauce, and fresh herbs — served over lettuce cups.","ingredients":["1 lb ground chicken","3 tbsp fish sauce","2 tbsp lime juice","1 tbsp toasted rice powder","2 shallots sliced","fresh mint and cilantro","1 tsp chili flakes","butter lettuce cups"],"prepSteps":["Toast 2 tbsp raw rice in dry pan until golden, grind to powder"],"steps":["Cook ground chicken in pan over high heat, breaking apart, 5 min","Remove from heat, add fish sauce, lime juice, rice powder, chili","Toss with shallots, mint, cilantro","Serve in lettuce cups with extra lime"]},
 "supplyReminders":[]}`}]);
       const parsed=JSON.parse(t.replace(/```json|```/g,"").trim());
       sPl(parsed);sC({});setExpanded({});setSwapPicker(null);
@@ -516,7 +618,32 @@ Return valid JSON:
     setLoading(false)
   };
 
-  // ── Swap meal ──
+  // ── Fetch a fresh adventure suggestion without regenerating the whole plan ──
+  const fetchNewAdventure=async()=>{
+    if(adventureLoading)return;
+    setAdventureLoading(true);
+    const cuisineHints=[];
+    const allNames=(recipes.map(r=>r.name).join(" ")+" "+(plan?.meals?.map(m=>m.name).join(" ")||"")).toLowerCase();
+    if(allNames.match(/taco|fajita|burrito|mexican/))cuisineHints.push("Mexican");
+    if(allNames.match(/stir.?fry|teriyaki|asian|soy/))cuisineHints.push("Asian");
+    if(allNames.match(/pasta|bolognese|pesto|italian/))cuisineHints.push("Italian");
+    if(allNames.match(/salmon|fish|shrimp/))cuisineHints.push("Seafood");
+    const seed=Date.now().toString(36);
+    try{
+      const t=await ai([{role:"user",content:`Suggest ONE fun adventure recipe for a family that usually eats: ${cuisineHints.join(", ")||"American/Italian/Mexican"} food. Pick a cuisine they have NOT been eating. Seed:${seed}
+
+Rules: under 35 min, family-friendly, easy grocery ingredients, different from their usual rotation.
+
+Return ONLY valid JSON:
+{"name":"dish name","cuisine":"cuisine type","why":"one warm sentence why they'd love it","time":25,"teaser":"one vivid appetizing sentence describing the dish","ingredients":["ingredient 1","ingredient 2","ingredient 3","ingredient 4","ingredient 5","ingredient 6"],"prepSteps":["one prep step if needed"],"steps":["Step 1 with specifics","Step 2 with specifics","Step 3 with specifics","Step 4 with specifics"]}`}]);
+      const parsed=JSON.parse(t.replace(/```json|```/g,"").trim());
+      sPl({...plan,adventureSuggestion:parsed});
+      setAdventureExpanded(true);
+    }catch(e){flash("Couldn't fetch a new suggestion — try again");}
+    setAdventureLoading(false);
+  };
+
+    // ── Swap meal ──
   const swapMeal=async(i,name)=>{
     setSwapping(i);
     const day=plan.meals[i].day;
@@ -691,18 +818,82 @@ Return valid JSON:
     {plan&&<>
       {plan.savings&&<div className="nudge nudge-sa"><b>💡</b><span>{plan.savings}</span></div>}
       {plan.supplyReminders?.length>0&&<div className="nudge nudge-am"><b>🏠</b><div>{plan.supplyReminders.map((r,i)=><div key={i}>{r}</div>)}</div></div>}
-      {plan.adventureSuggestion&&<div style={{background:"linear-gradient(135deg,#F5F0FF 0%,#FFF8EE 100%)",border:"1.5px solid #D8C8F0",borderRadius:14,padding:"14px 16px",marginBottom:14}}>
-        <div style={{fontSize:10,fontWeight:700,textTransform:"uppercase",letterSpacing:".8px",color:"#7C5AB8",marginBottom:4}}>✨ Maybe try this sometime?</div>
-        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}><span style={{fontFamily:"var(--hd)",fontSize:16,fontWeight:500}}>{plan.adventureSuggestion.name}</span><span style={{fontSize:11,fontWeight:700,color:"#7C5AB8",background:"#EDE4FF",padding:"2px 8px",borderRadius:10}}>{plan.adventureSuggestion.cuisine}</span></div>
-        <div style={{fontSize:13,color:"var(--i2)",lineHeight:1.5,marginBottom:5}}>{plan.adventureSuggestion.teaser}</div>
-        <div style={{fontSize:12,color:"#6B4FA0",fontStyle:"italic",marginBottom:4}}>{plan.adventureSuggestion.why}</div>
-        <div style={{fontSize:11,color:"var(--i3)"}}>⏱ {plan.adventureSuggestion.time} min · family-friendly</div>
+      {plan.adventureSuggestion&&<div style={{background:"linear-gradient(135deg,#F5F0FF 0%,#FFF8EE 100%)",border:"1.5px solid #D8C8F0",borderRadius:14,marginBottom:14,overflow:"hidden"}}>
+        {/* header row */}
+        <div style={{padding:"14px 16px",cursor:"pointer"}} onClick={()=>setAdventureExpanded(e=>!e)}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+            <div style={{fontSize:10,fontWeight:700,textTransform:"uppercase",letterSpacing:".8px",color:"#7C5AB8"}}>✨ Maybe try this sometime?</div>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <button style={{border:"none",background:"none",cursor:"pointer",fontSize:12,color:"#9B7ED4",padding:"2px 6px",borderRadius:8,fontFamily:"var(--bd)",fontWeight:700}}
+                onClick={e=>{e.stopPropagation();fetchNewAdventure();}}>{adventureLoading?"...":"↻ New idea"}</button>
+              <span style={{color:"#9B7ED4",transform:adventureExpanded?"rotate(180deg)":"none",transition:"transform .2s"}}>{I.chev}</span>
+            </div>
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
+            <span style={{fontFamily:"var(--hd)",fontSize:16,fontWeight:500,color:"var(--ink)"}}>{plan.adventureSuggestion.name}</span>
+            <span style={{fontSize:11,fontWeight:700,color:"#7C5AB8",background:"#EDE4FF",padding:"2px 8px",borderRadius:10,whiteSpace:"nowrap"}}>{plan.adventureSuggestion.cuisine}</span>
+            <span style={{fontSize:11,color:"var(--i3)",marginLeft:"auto",whiteSpace:"nowrap"}}>⏱ {plan.adventureSuggestion.time}m</span>
+          </div>
+          <div style={{fontSize:13,color:"var(--i2)",lineHeight:1.45}}>{plan.adventureSuggestion.teaser}</div>
+        </div>
+        {/* expanded */}
+        {adventureExpanded&&<div style={{borderTop:"1px solid #D8C8F0",padding:"12px 16px 16px"}}>
+          <div style={{fontSize:12,color:"#6B4FA0",fontStyle:"italic",marginBottom:12}}>{plan.adventureSuggestion.why}</div>
+          {plan.adventureSuggestion.ingredients?.length>0&&<>
+            <div style={{fontSize:10,fontWeight:700,textTransform:"uppercase",letterSpacing:".6px",color:"#9B7ED4",marginBottom:6}}>Ingredients</div>
+            <ul style={{listStyle:"none",padding:0,margin:"0 0 14px"}}>
+              {(Array.isArray(plan.adventureSuggestion.ingredients)?plan.adventureSuggestion.ingredients:[]).map((ing,i)=>
+                <li key={i} style={{fontSize:13,color:"var(--i2)",padding:"3px 0",paddingLeft:14,position:"relative",lineHeight:1.4}}>
+                  <span style={{position:"absolute",left:0,color:"#C4AEE8"}}>•</span>{ing}
+                </li>)}
+            </ul>
+          </>}
+          {plan.adventureSuggestion.prepSteps?.length>0&&<>
+            <div style={{fontSize:10,fontWeight:700,textTransform:"uppercase",letterSpacing:".6px",color:"#9B7ED4",marginBottom:6}}>Prep ahead</div>
+            <ol style={{paddingLeft:18,margin:"0 0 14px"}}>{plan.adventureSuggestion.prepSteps.map((s,i)=><li key={i} style={{fontSize:13,color:"var(--i2)",padding:"3px 0",lineHeight:1.5}}>{s}</li>)}</ol>
+          </>}
+          {plan.adventureSuggestion.steps?.length>0&&<>
+            <div style={{fontSize:10,fontWeight:700,textTransform:"uppercase",letterSpacing:".6px",color:"#9B7ED4",marginBottom:6}}>How to make it</div>
+            <ol style={{paddingLeft:18,margin:"0 0 16px"}}>{plan.adventureSuggestion.steps.map((s,i)=><li key={i} style={{fontSize:13,color:"var(--i2)",padding:"3px 0",lineHeight:1.5}}>{s}</li>)}</ol>
+          </>}
+          <div style={{display:"flex",gap:8}}>
+            <button className="btn bg" style={{flex:1,padding:"11px 16px",fontSize:13,background:"#7C5AB8"}} onClick={()=>{
+              const adv=plan.adventureSuggestion;
+              const usedDays=plan.meals?.map(m=>m.day)||[];
+              const freeDays=DAYS.filter(d=>!usedDays.includes(d));
+              const targetDay=freeDays[0]||DAYS[0];
+              const newMeal={day:targetDay,name:adv.name,time:adv.time||30,
+                ingredients:Array.isArray(adv.ingredients)?adv.ingredients:[adv.teaser||""],
+                prep:Array.isArray(adv.prepSteps)?adv.prepSteps:[],
+                finish:Array.isArray(adv.steps)?adv.steps:[adv.teaser||"Cook and serve"],
+                noPrepFinish:Array.isArray(adv.steps)?adv.steps:[],shared:[]};
+              sPl({...plan,meals:[...(plan.meals||[]),newMeal]});
+              setAdventureExpanded(false);
+              flash(`${adv.name} added to ${targetDay}!`);
+            }}>+ Add to This Week</button>
+            <button className="btn bo bsm" style={{fontSize:13,borderColor:"#D8C8F0",color:"#7C5AB8",whiteSpace:"nowrap"}} onClick={()=>{
+              const adv=plan.adventureSuggestion;
+              const newRecipe={id:"r"+Date.now(),name:adv.name,time:adv.time||30,servings:4,favorite:false,
+                ingredients:Array.isArray(adv.ingredients)?adv.ingredients.join(", "):adv.teaser||"",
+                prep:Array.isArray(adv.prepSteps)?adv.prepSteps.join(". "):"",
+                finish:Array.isArray(adv.steps)?adv.steps.join(". "):adv.teaser||"",
+                source:adv.cuisine||""};
+              sR([...recipes,newRecipe]);
+              flash(`Saved to Recipes!`);
+            }}>Save Recipe</button>
+          </div>
+        </div>}
       </div>}
       {plan.reused&&Object.keys(plan.reused).length>0&&<div style={{marginBottom:14}}><span style={{fontSize:12,fontWeight:700,color:"var(--i3)"}}>SHARED: </span>{Object.entries(plan.reused).map(([k,v])=><span key={k} className="sp">{k} ×{v.length}</span>)}</div>}
       {plan.prepGuide&&<div className="prb"><div className="prb-t">🔪 {(prefs.prepDays||["Sunday"]).join(" & ")} Prep — ~{plan.prepGuide.minutes} min</div>{plan.prepGuide.summary&&<div style={{marginBottom:12,padding:"10px 14px",background:"rgba(255,255,255,.6)",borderRadius:10}}><div style={{fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:".5px",color:"var(--sa)",marginBottom:6}}>After prep you'll have</div>{fmt(plan.prepGuide.summary).map((s,i)=><div key={i} style={{fontSize:13,color:"#2B5E3B",padding:"2px 0",paddingLeft:16,position:"relative"}}><span style={{position:"absolute",left:0}}>✓</span>{s}</div>)}</div>}<ol>{plan.prepGuide.steps.map((s,i)=><li key={i}>{s}</li>)}</ol></div>}
-      {plan.meals?.map((m,i)=><div className="dc" key={i}>
+      {plan.meals?.map((m,i)=>{const isToday=m.day===today;return<div className="dc" key={i} style={isToday?{border:"1.5px solid var(--ru)",boxShadow:"0 2px 12px rgba(192,78,40,.10)"}:{}}>
         <div className="dc-top" onClick={()=>setExpanded(e=>({...e,[i]:!e[i]}))}>
-          <div><div className="dc-day">{m.day}{m.day===today?" · Tonight":""}</div><div className="dc-meal">{m.name}</div></div>
+          <div>
+            <div className="dc-day" style={isToday?{color:"var(--ru)"}:{}}>
+              {m.day}{isToday&&<span style={{fontSize:10,fontWeight:700,background:"var(--ru)",color:"#fff",padding:"1px 7px",borderRadius:10,marginLeft:7,letterSpacing:".3px",verticalAlign:"middle"}}>TONIGHT</span>}
+            </div>
+            <div className="dc-meal">{m.name}</div>
+          </div>
           <div style={{display:"flex",alignItems:"center",gap:6}}><span className="dc-time">{m.time}m</span><span style={{transform:expanded[i]?"rotate(180deg)":"none",transition:"transform .2s",color:"var(--i4)"}}>{I.chev}</span></div>
         </div>
         {expanded[i]&&<div className="dc-body">
@@ -722,7 +913,7 @@ Return valid JSON:
             <button className="swbtn" onClick={e=>{e.stopPropagation();setSwapPicker(null)}}>Cancel</button>
           </div>:<button className="swbtn" onClick={e=>{e.stopPropagation();setSwapPicker(i)}}>{I.swap} Swap this meal</button>}
         </div>}
-      </div>)}
+      </div>})}
     </>}
   </>}
 
@@ -992,60 +1183,40 @@ Return valid JSON:
 
   {/* Receipt scanner modal */}
   {modal?.type==="scanner"&&<div className="ov" onClick={e=>e.target===e.currentTarget&&setModal(null)}><div className="mdl">
-    <div className="mdl-hd"><h3>Scan Receipt</h3><button className="ib" onClick={()=>setModal(null)}>{I.x}</button></div>
+    <div className="mdl-hd"><h3>Add Receipt</h3><button className="ib" onClick={()=>setModal(null)}>{I.x}</button></div>
     <div className="mdl-bd">
       {!scannedResult?<>
-        {/* tabs */}
-        <div className="tab-strip" style={{marginBottom:16}}>
-          <button className={`tab-btn ${scanTab==="photo"?"on":""}`} onClick={()=>setScanTab("photo")}>📷 Photo</button>
-          <button className={`tab-btn ${scanTab==="pdf"?"on":""}`} onClick={()=>setScanTab("pdf")}>📄 PDF</button>
-          <button className={`tab-btn ${scanTab==="email"?"on":""}`} onClick={()=>setScanTab("email")}>📧 Email</button>
-          <button className={`tab-btn ${scanTab==="text"?"on":""}`} onClick={()=>setScanTab("text")}>✏️ Type</button>
+        {/* single smart upload zone */}
+        <input type="file" ref={fileRef} accept="image/*" capture="environment" style={{display:"none"}} onChange={e=>{if(e.target.files[0])scanImage(e.target.files[0])}}/>
+        <input type="file" ref={pdfRef} accept="application/pdf" style={{display:"none"}} onChange={e=>{if(e.target.files[0])scanPdf(e.target.files[0])}}/>
+
+        {/* two big tap targets */}
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:16}}>
+          <div className="upload-zone" style={{padding:"20px 12px"}} onClick={()=>fileRef.current?.click()}>
+            <div style={{fontSize:28,marginBottom:6}}>📷</div>
+            <div style={{fontSize:13,fontWeight:700,color:"var(--ink)"}}>Photo</div>
+            <div style={{fontSize:11,color:"var(--i3)",marginTop:2}}>Snap or upload</div>
+          </div>
+          <div className="upload-zone" style={{padding:"20px 12px"}} onClick={()=>pdfRef.current?.click()}>
+            <div style={{fontSize:28,marginBottom:6}}>📄</div>
+            <div style={{fontSize:13,fontWeight:700,color:"var(--ink)"}}>PDF</div>
+            <div style={{fontSize:11,color:"var(--i3)",marginTop:2}}>Any format</div>
+          </div>
         </div>
 
-        {/* photo upload */}
-        {scanTab==="photo"&&<>
-          <input type="file" ref={fileRef} accept="image/*" capture="environment" style={{display:"none"}} onChange={e=>{if(e.target.files[0])scanImage(e.target.files[0])}}/>
-          <div className="upload-zone" onClick={()=>fileRef.current?.click()}>
-            <div style={{fontSize:36,marginBottom:8}}>📷</div>
-            <div style={{fontFamily:"var(--hd)",fontSize:16,fontWeight:500,marginBottom:4}}>Take or upload a photo</div>
-            <div style={{fontSize:13,color:"var(--i3)"}}>Snap your receipt · AI reads every item</div>
-          </div>
-          {scanning&&<div style={{textAlign:"center",marginTop:16}}><div className="dots"><span/><span/><span/></div><p style={{fontSize:13,color:"var(--i3)",marginTop:8}}>Reading receipt...</p></div>}
-        </>}
+        {/* paste area — works for email, text, anything */}
+        <div style={{position:"relative"}}>
+          <textarea className="fta" style={{minHeight:110,fontSize:13,paddingRight:70}}
+            value={scanText} onChange={e=>setScanText(e.target.value)}
+            placeholder="Or paste anything here — Instacart email, order confirmation, receipt text..."/>
+          {scanText.trim()&&<button className="btn bg" style={{position:"absolute",bottom:10,right:10,width:"auto",padding:"8px 14px",fontSize:12}}
+            onClick={scanTextContent}>Read it</button>}
+        </div>
 
-        {/* PDF upload */}
-        {scanTab==="pdf"&&<>
-          <input type="file" ref={pdfRef} accept="application/pdf" style={{display:"none"}} onChange={e=>{if(e.target.files[0])scanPdf(e.target.files[0])}}/>
-          <div className="upload-zone" onClick={()=>pdfRef.current?.click()}>
-            <div style={{fontSize:36,marginBottom:8}}>📄</div>
-            <div style={{fontFamily:"var(--hd)",fontSize:16,fontWeight:500,marginBottom:4}}>Upload a PDF receipt</div>
-            <div style={{fontSize:13,color:"var(--i3)"}}>Any store, any format — AI reads it</div>
-          </div>
-          {(scanning||pdfLoading)&&<div style={{textAlign:"center",marginTop:16}}>
-            <div className="dots"><span/><span/><span/></div>
-            <p style={{fontSize:13,color:"var(--i3)",marginTop:8}}>{pdfLoading?"Reading PDF...":"Extracting items..."}</p>
-          </div>}
-        </>}
-
-        {/* email paste */}
-        {scanTab==="email"&&<>
-          <div className="nudge nudge-bl"><b>💡</b><span>Open your Instacart, Walmart, Amazon Fresh, or store order confirmation email → select all → copy → paste below.</span></div>
-          <div className="fg">
-            <label className="fl">Paste order confirmation email</label>
-            <textarea className="fta" style={{minHeight:120}} value={scanText} onChange={e=>setScanText(e.target.value)} placeholder="Paste the full email text here..."/>
-          </div>
-          <button className="btn bg" disabled={!scanText.trim()||scanning} onClick={scanTextContent}>{scanning?<><div className="dots" style={{padding:0,display:"inline-flex"}}><span/><span/><span/></div> Reading...</>:"Extract Items"}</button>
-        </>}
-
-        {/* manual text */}
-        {scanTab==="text"&&<>
-          <div className="fg">
-            <label className="fl">Type or paste what you bought</label>
-            <textarea className="fta" style={{minHeight:120}} value={scanText} onChange={e=>setScanText(e.target.value)} placeholder={"Wegmans\n\nChicken breast 2lb $8.99\nOrganic spinach $3.49\nMilk whole gallon $4.29\nCheddar cheese block $6.99"}/>
-          </div>
-          <button className="btn bg" disabled={!scanText.trim()||scanning} onClick={scanTextContent}>{scanning?<><div className="dots" style={{padding:0,display:"inline-flex"}}><span/><span/><span/></div> Reading...</>:"Parse Items"}</button>
-        </>}
+        {(scanning||pdfLoading)&&<div style={{textAlign:"center",marginTop:16}}>
+          <div className="dots"><span/><span/><span/></div>
+          <p style={{fontSize:13,color:"var(--i3)",marginTop:8}}>{pdfLoading?"Reading PDF...":"Reading receipt..."}</p>
+        </div>}
       </>:<>
         {/* scanned result review */}
         <div style={{marginBottom:16}}>
@@ -1056,22 +1227,22 @@ Return valid JSON:
             </div>
             <button className="btn bs bsm" onClick={()=>setScannedResult(null)}>Re-scan</button>
           </div>
-          {/* store assignment */}
           <div className="fg">
-            <label className="fl">Assign to store</label>
+            <label className="fl">Store</label>
             <select className="fsel" defaultValue={scannedResult.storeName||userStores[0]||""} id="scan-store-select">
               {userStores.map(s=><option key={s} value={s}>{s}</option>)}
-              <option value={scannedResult.storeName||"Other"}>{scannedResult.storeName||"Other (detected)"}</option>
+              {scannedResult.storeName&&!userStores.includes(scannedResult.storeName)&&
+                <option value={scannedResult.storeName}>{scannedResult.storeName}</option>}
             </select>
           </div>
-          <div style={{fontSize:12,fontWeight:700,color:"var(--i3)",marginBottom:6}}>ITEMS FOUND ({scannedResult.items?.length||0})</div>
-          <div style={{maxHeight:280,overflowY:"auto",border:"1px solid var(--sand)",borderRadius:10}}>
-            {(scannedResult.items||[]).map((item,i)=><div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 12px",borderBottom:i<scannedResult.items.length-1?"1px solid var(--sand)":"none"}}>
+          <div style={{fontSize:12,fontWeight:700,color:"var(--i3)",marginBottom:6}}>{scannedResult.items?.length||0} ITEMS FOUND</div>
+          <div style={{maxHeight:300,overflowY:"auto",border:"1px solid var(--sand)",borderRadius:10}}>
+            {(scannedResult.items||[]).map((item,i)=><div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"9px 12px",borderBottom:i<scannedResult.items.length-1?"1px solid var(--sand)":"none"}}>
               <div>
                 <div style={{fontSize:13.5,fontWeight:600}}>{item.name}</div>
                 <div style={{fontSize:11,color:"var(--i3)"}}>{item.category}{item.quantity>1?` · qty ${item.quantity}`:""}</div>
               </div>
-              {item.price&&<span style={{fontSize:13,color:"var(--i2)"}}>{item.price}</span>}
+              {item.price&&<span style={{fontSize:13,color:"var(--i2)",whiteSpace:"nowrap",marginLeft:8}}>{item.price}</span>}
             </div>)}
           </div>
         </div>
