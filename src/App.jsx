@@ -261,6 +261,7 @@ export default function App(){
       const t=await aiVision({imageBase64:base64,mimeType:file.type||"image/jpeg"});
       const parsed=JSON.parse(t.replace(/```json|```/g,"").trim());
       setScannedResult(parsed);
+      setScanStore(parsed.storeName||"");
     }catch(e){flash("Couldn't read receipt — try pasting the text instead");}
     setScanning(false);
   };
@@ -383,6 +384,7 @@ export default function App(){
         else if(l.includes('wegmans'))parsed.storeName='Wegmans';
       }
       setScannedResult(parsed);
+      setScanStore(parsed.storeName||userStores[0]||"");
     }catch(e){
       console.error('Text scan error:',e);
       flash("Couldn't read that — make sure you copied the full receipt text");
@@ -1161,7 +1163,7 @@ Return ONLY valid JSON:
           <div className="fg">
             <label className="fl">Store</label>
             <select className="fsel"
-              value={scanStore||(scannedResult.storeName&&userStores.includes(scannedResult.storeName)?scannedResult.storeName:userStores[0])||scannedResult.storeName||""}
+              value={scanStore||scannedResult.storeName||userStores[0]||""}
               onChange={e=>setScanStore(e.target.value)}>
               {userStores.map(s=><option key={s} value={s}>{s}</option>)}
               {scannedResult.storeName&&!userStores.includes(scannedResult.storeName)&&
@@ -1184,8 +1186,7 @@ Return ONLY valid JSON:
     {scannedResult&&<div className="mdl-ft">
       <button className="btn bs" onClick={()=>setScannedResult(null)}>Back</button>
       <button className="btn bg" onClick={()=>{
-        const store=scanStore||(scannedResult.storeName&&userStores.includes(scannedResult.storeName)?scannedResult.storeName:userStores[0])||scannedResult.storeName||"Unknown Store";
-        setScanStore("");
+        const store=scanStore||scannedResult.storeName||userStores[0]||"Unknown Store";
         savePurchase(scannedResult,store);
       }}>Save to History</button>
     </div>}
@@ -1251,12 +1252,9 @@ function SupplyForm({s,stores,onSave,onClose}){
   </div>
   <div className="mdl-ft"><button className="btn bs" onClick={onClose}>Cancel</button><button className="btn bg" disabled={!n.trim()} onClick={()=>onSave({name:n.trim(),where:w,weeks:+wk||4,last:l||null})}>{s?"Save":"Track"}</button></div></>
 }
-  // pantry staple categories — items in these categories get added to pantry automatically
-  const PANTRY_CATS=["Dairy & Eggs","Canned & Dry","Condiments & Oils","Beverages"];
-  // keywords that indicate a pantry staple regardless of category
-  const PANTRY_KEYWORDS=["butter","milk","eggs","olive oil","vegetable oil","salt","pepper","flour","sugar","rice","pasta","soy sauce","vinegar","honey","garlic","onion","broth","stock","canned","beans","lentils","oats","cereal","juice","water","cheese","yogurt","cream","parmesan"];
-
   const savePurchase=(result,store)=>{
+    const PANTRY_CATS=["Dairy & Eggs","Canned & Dry","Condiments & Oils","Beverages"];
+    const PANTRY_KEYWORDS=["butter","milk","eggs","olive oil","vegetable oil","salt","pepper","flour","sugar","rice","pasta","soy sauce","vinegar","honey","garlic","onion","broth","stock","canned","beans","lentils","oats","cereal","juice","water","cheese","yogurt","cream","parmesan"];
     const purchase={
       id:"p"+Date.now(),
       date:result.date||new Date().toISOString().split("T")[0],
@@ -1279,7 +1277,7 @@ function SupplyForm({s,stores,onSave,onClose}){
       if(isStaple){
         // use a clean short name for pantry — strip sizes and brand noise
         const cleanName=item.name
-          .replace(/,?\s*\d+(\.\d+)?\s*(oz|lb|gal|fl oz|ct|count|pack).*/i,"")
+          .replace(/,?\s*\d+(\.\d+)?\s*(oz|lb|gal|fl oz|ct|count|pack).*/i,"")
           .replace(/kirkland signature\s*/i,"")
           .trim();
         if(cleanName.length>2&&!pantry.some(p=>p.toLowerCase()===cleanName.toLowerCase())){
@@ -1291,8 +1289,11 @@ function SupplyForm({s,stores,onSave,onClose}){
       sPa([...pantry,...newPantryItems]);
     }
 
-    setScannedResult(null);setScanText("");setScanStore("");
+    // close modal and reset state
+    setModal(null);
+    setScannedResult(null);
+    setScanText("");
+    setScanStore("");
     const pantryMsg=newPantryItems.length>0?` · ${newPantryItems.length} added to pantry`:"";
     flash(`Saved ${purchase.items.length} items from ${purchase.storeName}${pantryMsg}`);
-    setModal(null);
   };
