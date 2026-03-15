@@ -13,7 +13,7 @@ import { useState, useRef } from "react";
     v5.2 additions:
     • PDF receipt support (Costco + any text PDF) via PDF.js client-side extraction  */
 
-const LS={r:"sm4-recipes",p:"sm4-prefs",pl:"sm4-plan",s:"sm4-supplies",ck:"sm4-checked",rt:"sm4-ratings",pa:"sm4-pantry",hi:"sm4-history",ph:"sm5-purchases"};
+const LS={r:"sm4-recipes",p:"sm4-prefs",pl:"sm4-plan",pl2:"sm5-plan2",s:"sm4-supplies",ck:"sm4-checked",rt:"sm4-ratings",pa:"sm4-pantry",hi:"sm4-history",ph:"sm5-purchases"};
 const ld=(k,f)=>{try{const v=localStorage.getItem(k);return v?JSON.parse(v):f}catch{return f}};
 const sv=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch{}};
 
@@ -153,6 +153,8 @@ export default function App(){
   const[recipes,setRecipes]=useState(()=>ld(LS.r,RECIPES));
   const[prefs,setPrefs]=useState(()=>{const p=ld(LS.p,DEF_PREFS);return{...DEF_PREFS,...p,stores:p.stores&&p.stores.length?p.stores:DEF_PREFS.stores};});
   const[plan,setPlan]=useState(()=>ld(LS.pl,null));
+  const[nextPlan,setNextPlan]=useState(()=>ld(LS.pl2,null));
+  const[planView,setPlanView]=useState("this"); // "this" | "next"
   const[supplies,setSupplies]=useState(()=>ld(LS.s,SUPPLIES));
   const[checked,setChecked]=useState(()=>ld(LS.ck,{}));
   const[ratings,setRatings]=useState(()=>ld(LS.rt,{}));
@@ -190,7 +192,7 @@ export default function App(){
 
   const sR=v=>{setRecipes(v);sv(LS.r,v)};
   const sP=v=>{setPrefs(v);sv(LS.p,v)};
-  const sPl=v=>{setPlan(v);sv(LS.pl,v)};
+  const sPl=v=>{setPlan(v);sv(LS.pl,v)};const sNPl=v=>{setNextPlan(v);sv(LS.pl2,v)};
   const sS=v=>{setSupplies(v);sv(LS.s,v)};
   const sC=v=>{setChecked(v);sv(LS.ck,v)};
   const sRt=v=>{setRatings(v);sv(LS.rt,v)};
@@ -444,8 +446,37 @@ export default function App(){
     setImporting(false)
   };
 
-  // ── Generate plan ──
-  const generate=async()=>{
+  // ── Cross-reference shopping list against recent purchases ──────────────
+  // Returns list of item strings that are likely still available at home
+  const getAvailableItems=()=>{
+    if(!purchases.length)return[];
+    const today=new Date();
+    const SHELF={
+      "Dairy & Eggs":7,"Meat & Seafood":3,"Produce":5,"Bakery":5,
+      "Snacks":21,"Beverages":14,"Household":30,"Canned & Dry":60,"Frozen":30
+    };
+    const available=[];
+    purchases.slice(0,5).forEach(purchase=>{
+      const boughtDate=new Date(purchase.date||today);
+      (purchase.items||[]).forEach(item=>{
+        const shelf=SHELF[item.category]||7;
+        const daysAgo=Math.round((today-boughtDate)/(1000*60*60*24));
+        if(daysAgo<=shelf)available.push(item.name.toLowerCase());
+      });
+    });
+    return available;
+  };
+
+  // Check if a shopping list item is covered by available items
+  const isCovered=(shoppingItem,available)=>{
+    const words=shoppingItem.toLowerCase()
+      .replace(/\d+[\d./]*\s*(oz|lb|gal|tbsp|tsp|cup|ct|g)\s*/gi,'')
+      .split(/\s+/).filter(w=>w.length>3);
+    return available.some(a=>words.some(w=>a.includes(w)));
+  };
+
+    // ── Generate plan ──
+  const generate=async(target)=>{ const isNext=target==="next";
     if(recipes.length<3){flash("Add at least 3 recipes first");setTab("recipes");return;}
     setLoading(true);setError(null);
     const favs=recipes.filter(r=>r.favorite).map(r=>r.name);
@@ -523,7 +554,7 @@ Return valid JSON:
 "adventureSuggestion":{"name":"Chicken Larb","cuisine":"Thai","why":"Your family loves bold flavors and this is bright, herby, and totally different from anything on your usual rotation.","time":25,"teaser":"Ground chicken tossed with toasted rice, lime juice, fish sauce, and fresh herbs — served over lettuce cups.","ingredients":["1 lb ground chicken","3 tbsp fish sauce","2 tbsp lime juice","1 tbsp toasted rice powder","2 shallots sliced","fresh mint and cilantro","1 tsp chili flakes","butter lettuce cups"],"prepSteps":["Toast 2 tbsp raw rice in dry pan until golden, grind to powder"],"steps":["Cook ground chicken in pan over high heat, breaking apart, 5 min","Remove from heat, add fish sauce, lime juice, rice powder, chili","Toss with shallots, mint, cilantro","Serve in lettuce cups with extra lime"]},
 "supplyReminders":[]}`}]);
       const parsed=JSON.parse(t.replace(/```json|```/g,"").trim());
-      sPl(parsed);sC({});setExpanded({});setSwapPicker(null);
+      if(isNext){sNPl(parsed);setPlanView("next");}else{sPl(parsed);sC({});setExpanded({});setSwapPicker(null);}      
       const newHist=[...history,{date:new Date().toISOString().split("T")[0],meals:parsed.meals?.map(m=>m.name)||[]}].slice(-12);
       sHi(newHist);
       flash("New plan ready!");
@@ -724,14 +755,35 @@ Return ONLY valid JSON:
 
   {/* ── PLAN ── */}
   {tab==="plan"&&<>
-    <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}><button className="ib" onClick={()=>setTab("home")} style={{marginLeft:-8}}>←</button><h1 className="pg-t">This Week</h1></div>
-    <p className="pg-s">{plan?plan.title:"Generate a plan to get started"}</p>
-    {error&&<div className="err-bar">{error}</div>}
-    <button className="btn bg" style={{marginBottom:16}} onClick={generate} disabled={loading}>{loading?<><div className="dots" style={{padding:0}}><span/><span/><span/></div> Planning...</>:plan?<>{I.refresh} New Plan</>:<>{I.spark} Plan My Week</>}</button>
-    {plan&&<>
-      {plan.savings&&<div className="nudge nudge-sa"><b>💡</b><span>{plan.savings}</span></div>}
-      {plan.supplyReminders?.length>0&&<div className="nudge nudge-am"><b>🏠</b><div>{plan.supplyReminders.map((r,i)=><div key={i}>{r}</div>)}</div></div>}
-      {plan.adventureSuggestion&&<div style={{background:"linear-gradient(135deg,#F5F0FF 0%,#FFF8EE 100%)",border:"1.5px solid #D8C8F0",borderRadius:14,marginBottom:14,overflow:"hidden"}}>
+    <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}><button className="ib" onClick={()=>setTab("home")} style={{marginLeft:-8}}>←</button><h1 className="pg-t">Meal Plan</h1></div>
+
+    {/* This week / Next week toggle */}
+    <div style={{display:"flex",gap:6,marginBottom:14}}>
+      <button className={`dchip ${planView==="this"?"on":""}`} style={{flex:1,textAlign:"center"}} onClick={()=>setPlanView("this")}>This Week</button>
+      <button className={`dchip ${planView==="next"?"on":""}`} style={{flex:1,textAlign:"center"}} onClick={()=>setPlanView("next")}>Next Week</button>
+    </div>
+
+    {planView==="this"&&<>
+      <p className="pg-s">{plan?plan.title:"No plan yet — generate one below"}</p>
+      {error&&<div className="err-bar">{error}</div>}
+      <button className="btn bg" style={{marginBottom:16}} onClick={()=>generate("this")} disabled={loading}>{loading?<><div className="dots" style={{padding:0}}><span/><span/><span/></div> Planning...</>:plan?<>{I.refresh} Regenerate</>:<>{I.spark} Plan This Week</>}</button>
+    </>}
+
+    {planView==="next"&&<>
+      <p className="pg-s">{nextPlan?nextPlan.title:"Plan ahead — we'll use what you already have"}</p>
+      {error&&<div className="err-bar">{error}</div>}
+      {!nextPlan&&purchases.length>0&&<div className="nudge nudge-sa"><b>🛒</b><span>We'll check your recent purchases and skip ingredients you likely still have.</span></div>}
+      <button className="btn bg" style={{marginBottom:16}} onClick={()=>generate("next")} disabled={loading}>{loading?<><div className="dots" style={{padding:0}}><span/><span/><span/></div> Planning...</>:nextPlan?<>{I.refresh} Regenerate Next Week</>:<>{I.spark} Plan Next Week</>}</button>
+    </>}
+
+    {((planView==="this"&&plan)||(planView==="next"&&nextPlan))&&(()=>{
+    const activePlan=planView==="next"?nextPlan:plan;
+    const setActivePlan=planView==="next"?sNPl:sPl;
+    return<>
+    {activePlan&&<>
+      {activePlan.savings&&<div className="nudge nudge-sa"><b>💡</b><span>{activePlan.savings}</span></div>}
+      {activePlan.supplyReminders?.length>0&&<div className="nudge nudge-am"><b>🏠</b><div>{activePlan.supplyReminders.map((r,i)=><div key={i}>{r}</div>)}</div></div>}
+      {activePlan.adventureSuggestion&&<div style={{background:"linear-gradient(135deg,#F5F0FF 0%,#FFF8EE 100%)",border:"1.5px solid #D8C8F0",borderRadius:14,marginBottom:14,overflow:"hidden"}}>
         {/* header row */}
         <div style={{padding:"14px 16px",cursor:"pointer"}} onClick={()=>setAdventureExpanded(e=>!e)}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
@@ -743,47 +795,47 @@ Return ONLY valid JSON:
             </div>
           </div>
           <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
-            <span style={{fontFamily:"var(--hd)",fontSize:16,fontWeight:500,color:"var(--ink)"}}>{plan.adventureSuggestion.name}</span>
-            <span style={{fontSize:11,fontWeight:700,color:"#7C5AB8",background:"#EDE4FF",padding:"2px 8px",borderRadius:10,whiteSpace:"nowrap"}}>{plan.adventureSuggestion.cuisine}</span>
-            <span style={{fontSize:11,color:"var(--i3)",marginLeft:"auto",whiteSpace:"nowrap"}}>⏱ {plan.adventureSuggestion.time}m</span>
+            <span style={{fontFamily:"var(--hd)",fontSize:16,fontWeight:500,color:"var(--ink)"}}>{activePlan.adventureSuggestion.name}</span>
+            <span style={{fontSize:11,fontWeight:700,color:"#7C5AB8",background:"#EDE4FF",padding:"2px 8px",borderRadius:10,whiteSpace:"nowrap"}}>{activePlan.adventureSuggestion.cuisine}</span>
+            <span style={{fontSize:11,color:"var(--i3)",marginLeft:"auto",whiteSpace:"nowrap"}}>⏱ {activePlan.adventureSuggestion.time}m</span>
           </div>
-          <div style={{fontSize:13,color:"var(--i2)",lineHeight:1.45}}>{plan.adventureSuggestion.teaser}</div>
+          <div style={{fontSize:13,color:"var(--i2)",lineHeight:1.45}}>{activePlan.adventureSuggestion.teaser}</div>
         </div>
         {/* expanded */}
         {adventureExpanded&&<div style={{borderTop:"1px solid #D8C8F0",padding:"12px 16px 16px"}}>
-          <div style={{fontSize:12,color:"#6B4FA0",fontStyle:"italic",marginBottom:12}}>{plan.adventureSuggestion.why}</div>
-          {plan.adventureSuggestion.ingredients?.length>0&&<>
+          <div style={{fontSize:12,color:"#6B4FA0",fontStyle:"italic",marginBottom:12}}>{activePlan.adventureSuggestion.why}</div>
+          {activePlan.adventureSuggestion.ingredients?.length>0&&<>
             <div style={{fontSize:10,fontWeight:700,textTransform:"uppercase",letterSpacing:".6px",color:"#9B7ED4",marginBottom:6}}>Ingredients</div>
             <ul style={{listStyle:"none",padding:0,margin:"0 0 14px"}}>
-              {(Array.isArray(plan.adventureSuggestion.ingredients)?plan.adventureSuggestion.ingredients:[]).map((ing,i)=>
+              {(Array.isArray(activePlan.adventureSuggestion.ingredients)?activePlan.adventureSuggestion.ingredients:[]).map((ing,i)=>
                 <li key={i} style={{fontSize:13,color:"var(--i2)",padding:"3px 0",paddingLeft:14,position:"relative",lineHeight:1.4}}>
                   <span style={{position:"absolute",left:0,color:"#C4AEE8"}}>•</span>{ing}
                 </li>)}
             </ul>
           </>}
-          {plan.adventureSuggestion.prepSteps?.length>0&&<>
+          {activePlan.adventureSuggestion.prepSteps?.length>0&&<>
             <div style={{fontSize:10,fontWeight:700,textTransform:"uppercase",letterSpacing:".6px",color:"#9B7ED4",marginBottom:6}}>Prep ahead</div>
-            <ol style={{paddingLeft:18,margin:"0 0 14px"}}>{plan.adventureSuggestion.prepSteps.map((s,i)=><li key={i} style={{fontSize:13,color:"var(--i2)",padding:"3px 0",lineHeight:1.5}}>{s}</li>)}</ol>
+            <ol style={{paddingLeft:18,margin:"0 0 14px"}}>{activePlan.adventureSuggestion.prepSteps.map((s,i)=><li key={i} style={{fontSize:13,color:"var(--i2)",padding:"3px 0",lineHeight:1.5}}>{s}</li>)}</ol>
           </>}
-          {plan.adventureSuggestion.steps?.length>0&&<>
+          {activePlan.adventureSuggestion.steps?.length>0&&<>
             <div style={{fontSize:10,fontWeight:700,textTransform:"uppercase",letterSpacing:".6px",color:"#9B7ED4",marginBottom:6}}>How to make it</div>
-            <ol style={{paddingLeft:18,margin:"0 0 16px"}}>{plan.adventureSuggestion.steps.map((s,i)=><li key={i} style={{fontSize:13,color:"var(--i2)",padding:"3px 0",lineHeight:1.5}}>{s}</li>)}</ol>
+            <ol style={{paddingLeft:18,margin:"0 0 16px"}}>{activePlan.adventureSuggestion.steps.map((s,i)=><li key={i} style={{fontSize:13,color:"var(--i2)",padding:"3px 0",lineHeight:1.5}}>{s}</li>)}</ol>
           </>}
           {/* swap picker — shown when week is full */}
           {adventureSwapMode&&<div style={{marginBottom:12}}>
             <div style={{fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:".6px",color:"#9B7ED4",marginBottom:8}}>Which meal do you want to replace?</div>
-            {(plan.meals||[]).map((m,i)=><div key={i}
+            {(activePlan.meals||[]).map((m,i)=><div key={i}
               style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 12px",border:"1.5px solid #D8C8F0",borderRadius:10,marginBottom:6,cursor:"pointer",background:"#FDFAFF"}}
               onClick={()=>{
-                const adv=plan.adventureSuggestion;
+                const adv=activePlan.adventureSuggestion;
                 const newMeal={day:m.day,name:adv.name,time:adv.time||30,
                   ingredients:Array.isArray(adv.ingredients)?adv.ingredients:[adv.teaser||""],
                   prep:Array.isArray(adv.prepSteps)?adv.prepSteps:[],
                   finish:Array.isArray(adv.steps)?adv.steps:[adv.teaser||"Cook and serve"],
                   noPrepFinish:Array.isArray(adv.steps)?adv.steps:[],shared:[]};
-                const updated=[...(plan.meals||[])];
+                const updated=[...(activePlan.meals||[])];
                 updated[i]=newMeal;
-                sPl({...plan,meals:updated});
+                sPl({...activePlan,meals:updated});
                 setAdventureSwapMode(false);setAdventureExpanded(false);
                 flash(`${m.day} swapped to ${adv.name}!`);
               }}>
@@ -797,9 +849,9 @@ Return ONLY valid JSON:
           </div>}
           <div style={{display:"flex",gap:8}}>
             <button className="btn bg" style={{flex:1,padding:"11px 16px",fontSize:13,background:"#7C5AB8"}} onClick={()=>{
-              const adv=plan.adventureSuggestion;
-              const currentMeals=plan.meals||[];
-              if(currentMeals.some(m=>m.name===adv.name)){flash("Already in this week's plan!");return;}
+              const adv=activePlan.adventureSuggestion;
+              const currentMeals=activePlan.meals||[];
+              if(currentMeals.some(m=>m.name===adv.name)){flash("Already in this week's activePlan!");return;}
               const usedDays=currentMeals.map(m=>m.day);
               const freeDay=DAYS.find(d=>!usedDays.includes(d));
               if(freeDay){
@@ -808,7 +860,7 @@ Return ONLY valid JSON:
                   prep:Array.isArray(adv.prepSteps)?adv.prepSteps:[],
                   finish:Array.isArray(adv.steps)?adv.steps:[adv.teaser||"Cook and serve"],
                   noPrepFinish:Array.isArray(adv.steps)?adv.steps:[],shared:[]};
-                sPl({...plan,meals:[...currentMeals,newMeal]});
+                sPl({...activePlan,meals:[...currentMeals,newMeal]});
                 setAdventureExpanded(false);
                 flash(`${adv.name} added to ${freeDay}!`);
               } else {
@@ -817,7 +869,7 @@ Return ONLY valid JSON:
               }
             }}>+ Add to This Week</button>
             <button className="btn bo bsm" style={{fontSize:13,borderColor:"#D8C8F0",color:"#7C5AB8",whiteSpace:"nowrap"}} onClick={()=>{
-              const adv=plan.adventureSuggestion;
+              const adv=activePlan.adventureSuggestion;
               const newRecipe={id:"r"+Date.now(),name:adv.name,time:adv.time||30,servings:4,favorite:false,
                 ingredients:Array.isArray(adv.ingredients)?adv.ingredients.join(", "):adv.teaser||"",
                 prep:Array.isArray(adv.prepSteps)?adv.prepSteps.join(". "):"",
@@ -829,9 +881,9 @@ Return ONLY valid JSON:
           </div>
         </div>}
       </div>}
-      {plan.reused&&Object.keys(plan.reused).length>0&&<div style={{marginBottom:14}}><span style={{fontSize:12,fontWeight:700,color:"var(--i3)"}}>SHARED: </span>{Object.entries(plan.reused).map(([k,v])=><span key={k} className="sp">{k} ×{v.length}</span>)}</div>}
-      {plan.prepGuide&&<div className="prb"><div className="prb-t">🔪 {(prefs.prepDays||["Sunday"]).join(" & ")} Prep — ~{plan.prepGuide.minutes} min</div>{plan.prepGuide.summary&&<div style={{marginBottom:12,padding:"10px 14px",background:"rgba(255,255,255,.6)",borderRadius:10}}><div style={{fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:".5px",color:"var(--sa)",marginBottom:6}}>After prep you'll have</div>{fmt(plan.prepGuide.summary).map((s,i)=><div key={i} style={{fontSize:13,color:"#2B5E3B",padding:"2px 0",paddingLeft:16,position:"relative"}}><span style={{position:"absolute",left:0}}>✓</span>{s}</div>)}</div>}<ol>{plan.prepGuide.steps.map((s,i)=><li key={i}>{s}</li>)}</ol></div>}
-      {plan.meals?.map((m,i)=>{const isToday=m.day===today;return<div className="dc" key={i} style={isToday?{border:"1.5px solid var(--ru)",boxShadow:"0 2px 12px rgba(192,78,40,.10)"}:{}}>
+      {activePlan.reused&&Object.keys(activePlan.reused).length>0&&<div style={{marginBottom:14}}><span style={{fontSize:12,fontWeight:700,color:"var(--i3)"}}>SHARED: </span>{Object.entries(activePlan.reused).map(([k,v])=><span key={k} className="sp">{k} ×{v.length}</span>)}</div>}
+      {activePlan.prepGuide&&<div className="prb"><div className="prb-t">🔪 {(prefs.prepDays||["Sunday"]).join(" & ")} Prep — ~{activePlan.prepGuide.minutes} min</div>{activePlan.prepGuide.summary&&<div style={{marginBottom:12,padding:"10px 14px",background:"rgba(255,255,255,.6)",borderRadius:10}}><div style={{fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:".5px",color:"var(--sa)",marginBottom:6}}>After prep you'll have</div>{fmt(activePlan.prepGuide.summary).map((s,i)=><div key={i} style={{fontSize:13,color:"#2B5E3B",padding:"2px 0",paddingLeft:16,position:"relative"}}><span style={{position:"absolute",left:0}}>✓</span>{s}</div>)}</div>}<ol>{activePlan.prepGuide.steps.map((s,i)=><li key={i}>{s}</li>)}</ol></div>}
+      {activePlan.meals?.map((m,i)=>{const isToday=m.day===today;return<div className="dc" key={i} style={isToday?{border:"1.5px solid var(--ru)",boxShadow:"0 2px 12px rgba(192,78,40,.10)"}:{}}>
         <div className="dc-top" onClick={()=>setExpanded(e=>({...e,[i]:!e[i]}))}>
           <div>
             <div className="dc-day" style={isToday?{color:"var(--ru)"}:{}}>
@@ -853,13 +905,15 @@ Return ONLY valid JSON:
           </div>
           {swapPicker===i?<div className="swpick">
             <div style={{fontSize:12,fontWeight:700,color:"var(--i3)",marginBottom:6}}>PICK REPLACEMENT</div>
-            {recipes.filter(r=>!plan.meals.some(mm=>mm.name===r.name)).map(r=><div key={r.id} className="swopt" onClick={e=>{e.stopPropagation();swapMeal(i,r.name)}}><div><span style={{fontWeight:600,fontSize:13.5}}>{r.favorite?"❤️ ":""}{r.name}</span></div><span style={{fontSize:12,color:"var(--i3)"}}>{r.time}m</span></div>)}
+            {recipes.filter(r=>!activePlan.meals.some(mm=>mm.name===r.name)).map(r=><div key={r.id} className="swopt" onClick={e=>{e.stopPropagation();swapMeal(i,r.name)}}><div><span style={{fontWeight:600,fontSize:13.5}}>{r.favorite?"❤️ ":""}{r.name}</span></div><span style={{fontSize:12,color:"var(--i3)"}}>{r.time}m</span></div>)}
             {swapping===i&&<div style={{textAlign:"center",padding:8,color:"var(--ru)",fontSize:13}}>Swapping...</div>}
             <button className="swbtn" onClick={e=>{e.stopPropagation();setSwapPicker(null)}}>Cancel</button>
           </div>:<button className="swbtn" onClick={e=>{e.stopPropagation();setSwapPicker(i)}}>{I.swap} Swap this meal</button>}
         </div>}
       </div>})}
-    </>}
+    </>
+  })()
+  }
   </>}
 
   {/* ── SHOP ── */}
@@ -873,6 +927,15 @@ Return ONLY valid JSON:
         <button className="btn bo bsm" onClick={printPlan}>🖨 Print</button>
         <button className="btn bo bsm" style={{marginLeft:"auto"}} onClick={()=>setModal({type:"scanner"})}>{I.receipt} Scan Receipt</button>
       </div>
+      {/* Already have nudge */}
+      {purchases.length>0&&(()=>{
+        const available=getAvailableItems();
+        const covered=[];
+        Object.entries(plan.shoppingList||{}).forEach(([cat,its])=>(its||[]).forEach(item=>{
+          if(!pantry.some(p=>item.toLowerCase().includes(p.toLowerCase()))&&isCovered(item,available))covered.push(item);
+        }));
+        return covered.length>0?<div className="nudge nudge-sa" style={{marginBottom:12}}><b>✓</b><div><b>Already in your kitchen</b> (from recent purchases — removed from list):<br/><span style={{fontSize:12}}>{covered.join(", ")}</span></div></div>:null;
+      })()}
 
       {/* add custom item */}
       <div style={{display:"flex",gap:8,marginBottom:16}}>
@@ -906,7 +969,8 @@ Return ONLY valid JSON:
         return <div className="shcat" key={cat}>
           <div className="shcat-t">{cat}</div>
           {its.map((item,i)=>{
-            const inPantry=pantry.some(p=>item.toLowerCase().includes(p.toLowerCase()));if(inPantry)return null;
+            const inPantry=pantry.some(p=>item.toLowerCase().includes(p.toLowerCase()));
+            const inFridge=purchases.length>0&&isCovered(item,getAvailableItems());if(inPantry)return null;
             const k=`${cat}-${i}`;const isChecked=!!checked[k];
             if(shopFilter==="unchecked"&&isChecked)return null;
             if(shopFilter==="checked"&&!isChecked)return null;
