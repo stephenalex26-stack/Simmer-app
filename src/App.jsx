@@ -46,17 +46,18 @@ const dbLoad=async(userId)=>{
       supabase.from("purchases").select("data").eq("user_id",userId).order("created_at",{ascending:false}),
       supabase.from("user_data").select("pantry,ratings,checked,history").eq("user_id",userId).single(),
     ]);
+    const arr=a=>a&&a.length>0?a:null; // treat empty arrays as null so defaults aren't overwritten
     return{
       prefs:prefRes.data?.prefs||null,
-      recipes:recRes.data?.map(r=>r.data)||null,
+      recipes:arr(recRes.data?.map(r=>r.data)),
       plan:planRes.data?.current_plan||null,
       nextPlan:planRes.data?.next_plan||null,
-      supplies:supRes.data?.map(s=>s.data)||null,
-      purchases:purRes.data?.map(p=>p.data)||null,
-      pantry:udRes.data?.pantry||null,
-      ratings:udRes.data?.ratings||null,
-      checked:udRes.data?.checked||null,
-      history:udRes.data?.history||null,
+      supplies:arr(supRes.data?.map(s=>s.data)),
+      purchases:arr(purRes.data?.map(p=>p.data)),
+      pantry:arr(udRes.data?.pantry),
+      ratings:udRes.data?.ratings&&Object.keys(udRes.data.ratings).length?udRes.data.ratings:null,
+      checked:udRes.data?.checked&&Object.keys(udRes.data.checked).length?udRes.data.checked:null,
+      history:arr(udRes.data?.history),
     };
   }catch(e){console.warn("Supabase load error:",e);return null;}
 };
@@ -958,7 +959,7 @@ Return ONLY valid JSON:
         <label className="fl">Any dietary needs? <small>(optional)</small></label>
         <input className="fi" value={prefs.diet} onChange={e=>setPrefs({...prefs,diet:e.target.value})} placeholder="No shellfish, low carb, kids hate mushrooms..."/>
       </div>
-      <button className="btn bg" style={{marginTop:12}} onClick={()=>{sP(prefs);setOnboarded(true);flash("Welcome! 🎉")}}>Let's Go</button>
+      <button className="btn bg" style={{marginTop:12}} onClick={()=>{sP(prefs);sR(recipes);sS(supplies);setOnboarded(true);flash("Welcome! 🎉")}}>Let's Go</button>
     </div></>);
   }
 
