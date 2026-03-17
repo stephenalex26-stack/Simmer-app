@@ -185,6 +185,7 @@ export default function App(){
   const[adventureLoading,setAdventureLoading]=useState(false);
   const[adventureSwapMode,setAdventureSwapMode]=useState(false);
   const[scanStore,setScanStore]=useState("");
+  const[undoSupply,setUndoSupply]=useState(null); // {id, prevDate}
   const fileRef=useRef();
 
   // derived: user's stores
@@ -509,10 +510,10 @@ export default function App(){
 HOUSEHOLD: ${prefs.adults} adults + ${prefs.kids} kids
 MAX ACTIVE COOK TIME: ${prefs.time} min
 PREP DAYS: ${(prefs.prepDays||["Sunday"]).join(", ")}
-PROTEIN: ${prefs.proteinPriority||"medium"}
+PROTEIN/DIET STYLE: ${prefs.proteinPriority==="vegetarian"?"VEGETARIAN — no meat or seafood in any meal":prefs.proteinPriority==="vegan"?"VEGAN — no meat, seafood, dairy, or eggs in any meal":prefs.proteinPriority==="high"?"High protein, include meat or seafood every night":prefs.proteinPriority==="low"?"Lighter meals, limit heavy proteins":("Balanced — "+prefs.proteinPriority)}
 MAX PASTA: ${prefs.maxPastaPerWeek??2}/week
 MAX RED MEAT: ${prefs.maxRedMeatPerWeek??2}/week
-${prefs.diet?`RESTRICTIONS: ${prefs.diet}`:""}
+${prefs.diet?`HARD DIETARY RESTRICTIONS (NEVER violate these — if uncertain, skip the ingredient entirely): ${prefs.diet}. Double-check every meal and every ingredient before including it.`:""}
 ${favs.length?`FAVORITES: ${favs.join(", ")}`:""}\
 ${loved.length?`\nFAMILY LOVED: ${loved.join(", ")}`:""}\
 ${skip.length?`\nAVOID: ${skip.join(", ")}`:""}\
@@ -520,8 +521,10 @@ ${cuisineHints.length?`\nFAMILY LIKES: ${cuisineHints.join(", ")} cuisine`:""}\
 ${prevNote}${pantryNote}${histNote}${purchaseNote}${storeNote}
 ${sb}
 
-USER'S SAVED RECIPES (use some, also suggest 1-2 NEW that fit this family):
+USER'S SAVED RECIPES — when using these, copy the EXACT ingredients and amounts as written. Do not invent new amounts or simplify them:
 ${rb}
+
+For NEW recipes you suggest (not from the list above), provide complete ingredients with exact measurements (e.g. "2 tbsp olive oil", "1 tsp cumin") and step-by-step instructions with temperatures and times.
 
 CRITICAL FORMATTING RULES:
 - "ingredients" must be ARRAY of strings
@@ -607,7 +610,30 @@ Return ONLY valid JSON:
     setSwapping(null)
   };
 
-  // ── Copy + Print ──
+  // ── AI swap — generates a fresh recipe instead of picking from library ──
+  const swapMealAI=async(i)=>{
+    setSwapping(i);
+    const day=activePlan.meals[i].day;
+    const usedNames=activePlan.meals.map(m=>m.name);
+    const dietNote=prefs.diet?`Dietary restrictions: ${prefs.diet}.`:"";
+    const cuisineNote=prefs.cuisines?.length?`Family likes: ${prefs.cuisines.join(", ")}.`:"";
+    try{
+      const t=await ai([{role:"user",content:`Generate a NEW family dinner recipe for ${day}. It must be different from these already planned: ${usedNames.join(", ")}.
+${dietNote} ${cuisineNote}
+Max cook time: ${prefs.time} min. Serves ${prefs.adults+prefs.kids}. Kid-friendly.
+Return ONLY valid JSON:
+{"name":"Recipe Name","time":25,"ingredients":["exact amount ingredient"],"prep":["step 1"],"finish":["step 1"],"noPrepFinish":["step 1"],"shared":[]}`}]);
+      const m=JSON.parse(t.replace(/```json|```/g,"").trim());
+      m.day=day;
+      const nm=[...activePlan.meals];nm[i]=m;
+      setActivePlan({...activePlan,meals:nm});
+      setSwapPicker(null);
+      flash(`Swapped to ${m.name}`);
+    }catch(e){flash("Couldn't generate — try again");}
+    setSwapping(null);
+  };
+
+    // ── Copy + Print ──
   const copyList=()=>{
     if(!plan?.shoppingList)return;
     let t=`🍲 ${plan.title}\n\n`;
@@ -697,7 +723,7 @@ Return ONLY valid JSON:
       </div>
       <div className="fg" style={{textAlign:"left"}}>
         <label className="fl">Protein priority</label>
-        <select className="fsel" value={prefs.proteinPriority} onChange={e=>setPrefs({...prefs,proteinPriority:e.target.value})}><option value="high">High protein</option><option value="medium">Balanced</option><option value="low">Lighter / plant-based</option></select>
+        <select className="fsel" value={prefs.proteinPriority} onChange={e=>setPrefs({...prefs,proteinPriority:e.target.value})}><option value="high">High protein (meat every night)</option><option value="medium">Balanced</option><option value="low">Less meat / more veggies</option><option value="vegetarian">Vegetarian</option><option value="vegan">Vegan</option></select>
       </div>
       {/* ── NEW: Where do you shop? ── */}
       <div className="fg" style={{textAlign:"left"}}>
@@ -716,11 +742,27 @@ Return ONLY valid JSON:
       </div>
       <div className="fg" style={{textAlign:"left"}}>
         <label className="fl">Favourite cuisines <small>(optional)</small></label>
-        <div className="dpick">
-          {["Italian","Mexican","Asian","Mediterranean","American","Indian","Japanese","Thai","Greek","Middle Eastern","Korean"].map(c=>{
-            const selected=(prefs.cuisines||[]).includes(c);
-            return <button key={c} className={`dchip ${selected?"on":""}`} style={{fontSize:12}}
-              onClick={()=>{const cur=prefs.cuisines||[];setPrefs({...prefs,cuisines:selected?cur.filter(x=>x!==c):[...cur,c]});}}>{c}</button>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginTop:4}}>
+          {[
+            {name:"Italian",emoji:"🇮🇹"},
+            {name:"Mexican",emoji:"🇲🇽"},
+            {name:"Asian",emoji:"🥢"},
+            {name:"Mediterranean",emoji:"🫒"},
+            {name:"American",emoji:"🍔"},
+            {name:"Indian",emoji:"🇮🇳"},
+            {name:"Japanese",emoji:"🍱"},
+            {name:"Thai",emoji:"🇹🇭"},
+            {name:"Greek",emoji:"🇬🇷"},
+            {name:"Middle Eastern",emoji:"🧆"},
+            {name:"Korean",emoji:"🇰🇷"},
+            {name:"French",emoji:"🇫🇷"},
+          ].map(({name,emoji})=>{
+            const selected=(prefs.cuisines||[]).includes(name);
+            return <button key={name}
+              style={{display:"flex",flexDirection:"column",alignItems:"center",gap:3,padding:"10px 6px",border:`1.5px solid ${selected?"var(--ru)":"var(--sd)"}`,borderRadius:10,background:selected?"var(--rub)":"none",cursor:"pointer",fontSize:11,fontWeight:700,color:selected?"var(--ru)":"var(--i2)",transition:"all .15s"}}
+              onClick={()=>{const cur=prefs.cuisines||[];setPrefs({...prefs,cuisines:selected?cur.filter(x=>x!==name):[...cur,name]});}}>
+              <span style={{fontSize:20}}>{emoji}</span>{name}
+            </button>
           })}
         </div>
       </div>
@@ -739,7 +781,7 @@ Return ONLY valid JSON:
   {tab==="home"&&<>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
       <h1 className="pg-t">Hey there 🍲</h1>
-      <button className="ib" onClick={()=>setTab("settings")} title="Settings">{I.gear}</button>
+      <button style={{display:"flex",alignItems:"center",gap:5,padding:"7px 12px",border:"1.5px solid var(--sd)",borderRadius:10,background:"none",cursor:"pointer",fontSize:12,fontWeight:600,color:"var(--i2)"}} onClick={()=>setTab("settings")}>{I.gear} <span>Settings</span></button>
     </div>
     {todayMeal?(<div className="tonight">
       <div className="tonight-label">Tonight's Dinner</div>
@@ -916,6 +958,10 @@ Return ONLY valid JSON:
           </div>
           {swapPicker===i?<div className="swpick">
             <div style={{fontSize:12,fontWeight:700,color:"var(--i3)",marginBottom:6}}>PICK REPLACEMENT</div>
+            <div className="swopt" style={{background:"var(--rub)",borderColor:"var(--ru)",marginBottom:6}} onClick={e=>{e.stopPropagation();swapMealAI(i);}}>
+              <div><span style={{fontWeight:600,fontSize:13.5,color:"var(--ru)"}}>✨ Generate something new</span><div style={{fontSize:11,color:"var(--ru)",opacity:.8}}>AI picks a fresh recipe</div></div>
+              <span style={{fontSize:12,color:"var(--ru)",fontWeight:700}}>AI →</span>
+            </div>
             {recipes.filter(r=>!activePlan.meals.some(mm=>mm.name===r.name)).map(r=><div key={r.id} className="swopt" onClick={e=>{e.stopPropagation();swapMeal(i,r.name)}}><div><span style={{fontWeight:600,fontSize:13.5}}>{r.favorite?"❤️ ":""}{r.name}</span></div><span style={{fontSize:12,color:"var(--i3)"}}>{r.time}m</span></div>)}
             {swapping===i&&<div style={{textAlign:"center",padding:8,color:"var(--ru)",fontSize:13}}>Swapping...</div>}
             <button className="swbtn" onClick={e=>{e.stopPropagation();setSwapPicker(null)}}>Cancel</button>
@@ -1076,7 +1122,7 @@ Return ONLY valid JSON:
   {/* ── RESTOCK ── */}
   {tab==="restock"&&<>
     <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}><button className="ib" onClick={()=>setTab("home")} style={{marginLeft:-8}}>←</button><h1 className="pg-t">Restock</h1></div>
-    <p className="pg-s">Tap ↻ when you buy something</p>
+    <p className="pg-s">Track household staples. Tap <b>✓ Bought</b> each time you restock — Simmer tracks how often you buy things so you never run out.</p>
     <div style={{display:"flex",gap:8,marginBottom:14}}>
       <button className="btn bg" style={{flex:1}} onClick={()=>setModal({type:"supply"})}>{I.plus} Track Item</button>
       <button className="btn bo bsm" onClick={()=>setModal({type:"scanner"})}>{I.receipt} Scan Receipt</button>
@@ -1094,8 +1140,17 @@ Return ONLY valid JSON:
           <div><h4 style={{fontSize:14.5,fontWeight:600}}>{s.name}</h4><p style={{fontSize:12,color:"var(--i3)",marginTop:1}}>every {s.weeks}wk</p></div>
           <div style={{display:"flex",alignItems:"center",gap:6}}>
             <span className={`badge ${st.c}`}>{st.t}</span>
-            <button className="ib" onClick={()=>{sS(supplies.map(x=>x.id===s.id?{...x,last:new Date().toISOString().split("T")[0]}:x));flash("Marked ordered")}}>{I.refresh}</button>
-            <button className="ib dng" onClick={()=>{sS(supplies.filter(x=>x.id!==s.id));flash("Removed")}}>{I.trash}</button>
+            <button style={{display:"flex",alignItems:"center",gap:4,padding:"6px 10px",border:"1.5px solid #C5DEC9",borderRadius:8,background:"var(--sab)",fontSize:11,fontWeight:700,color:"var(--sa)",cursor:"pointer"}}
+              onClick={()=>{
+                const prevDate=s.last;
+                sS(supplies.map(x=>x.id===s.id?{...x,last:new Date().toISOString().split("T")[0]}:x));
+                setUndoSupply({id:s.id,prevDate});
+                setToast("✓ Marked as bought");
+                setTimeout(()=>{setToast(null);setUndoSupply(null);},5000);
+              }}>✓ Bought</button>
+            <button className="ib dng" title="Remove item" onClick={()=>{sS(supplies.filter(x=>x.id!==s.id));flash("Removed");}}>
+              {I.trash}
+            </button>
           </div>
         </div>})}
       </div>
@@ -1136,7 +1191,10 @@ Return ONLY valid JSON:
 
   {/* ── SETTINGS ── */}
   {tab==="settings"&&<>
-    <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}><button className="ib" onClick={()=>setTab("home")} style={{marginLeft:-8}}>←</button><h1 className="pg-t">Settings</h1></div>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+      <div style={{display:"flex",alignItems:"center",gap:8}}><button className="ib" onClick={()=>setTab("home")} style={{marginLeft:-8}}>←</button><h1 className="pg-t">Settings</h1></div>
+      <span style={{fontSize:12,color:"var(--sa)",fontWeight:600}}>Changes save automatically</span>
+    </div>
     <div className="cd">
       <div className="frow">
         <div className="fg"><label className="fl">Adults</label><select className="fsel" value={prefs.adults} onChange={e=>sP({...prefs,adults:+e.target.value})}>{[1,2,3,4].map(n=><option key={n} value={n}>{n}</option>)}</select></div>
@@ -1166,7 +1224,7 @@ Return ONLY valid JSON:
     </div>
     <div className="cd">
       <div className="fl" style={{fontSize:15,marginBottom:12}}>Meal Preferences</div>
-      <div className="fg"><label className="fl">Protein</label><select className="fsel" value={prefs.proteinPriority||"medium"} onChange={e=>sP({...prefs,proteinPriority:e.target.value})}><option value="high">High protein</option><option value="medium">Balanced</option><option value="low">Lighter</option></select></div>
+      <div className="fg"><label className="fl">Protein</label><select className="fsel" value={prefs.proteinPriority||"medium"} onChange={e=>sP({...prefs,proteinPriority:e.target.value})}><option value="high">High protein (meat every night)</option><option value="medium">Balanced</option><option value="low">Less meat / more veggies</option><option value="vegetarian">Vegetarian</option><option value="vegan">Vegan</option></select></div>
       <div className="frow">
         <div className="fg"><label className="fl">Max pasta/wk</label><select className="fsel" value={prefs.maxPastaPerWeek??2} onChange={e=>sP({...prefs,maxPastaPerWeek:+e.target.value})}>{[0,1,2,3,4,5].map(n=><option key={n} value={n}>{n||"None"}</option>)}</select></div>
         <div className="fg"><label className="fl">Max red meat/wk</label><select className="fsel" value={prefs.maxRedMeatPerWeek??2} onChange={e=>sP({...prefs,maxRedMeatPerWeek:+e.target.value})}>{[0,1,2,3,4,5].map(n=><option key={n} value={n}>{n||"None"}</option>)}</select></div>
@@ -1175,14 +1233,27 @@ Return ONLY valid JSON:
       <div className="fg">
         <label className="fl">Cuisine preferences <small>(tap to select)</small></label>
         <p style={{fontSize:12,color:"var(--i3)",marginBottom:8}}>AI will lean toward these cuisines when suggesting meals</p>
-        <div className="dpick">
-          {["Italian","Mexican","Asian","Mediterranean","American","Indian","Japanese","Thai","Greek","Middle Eastern","French","Korean","Chinese","Vietnamese","Spanish"].map(c=>{
-            const selected=(prefs.cuisines||[]).includes(c);
-            return <button key={c} className={`dchip ${selected?"on":""}`}
-              onClick={()=>{
-                const cur=prefs.cuisines||[];
-                sP({...prefs,cuisines:selected?cur.filter(x=>x!==c):[...cur,c]});
-              }}>{c}</button>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginTop:4}}>
+          {[
+            {name:"Italian",emoji:"🇮🇹"},
+            {name:"Mexican",emoji:"🇲🇽"},
+            {name:"Asian",emoji:"🥢"},
+            {name:"Mediterranean",emoji:"🫒"},
+            {name:"American",emoji:"🍔"},
+            {name:"Indian",emoji:"🇮🇳"},
+            {name:"Japanese",emoji:"🍱"},
+            {name:"Thai",emoji:"🇹🇭"},
+            {name:"Greek",emoji:"🇬🇷"},
+            {name:"Middle Eastern",emoji:"🧆"},
+            {name:"Korean",emoji:"🇰🇷"},
+            {name:"French",emoji:"🇫🇷"},
+          ].map(({name,emoji})=>{
+            const selected=(prefs.cuisines||[]).includes(name);
+            return <button key={name}
+              style={{display:"flex",flexDirection:"column",alignItems:"center",gap:3,padding:"10px 6px",border:`1.5px solid ${selected?"var(--ru)":"var(--sd)"}`,borderRadius:10,background:selected?"var(--rub)":"none",cursor:"pointer",fontSize:11,fontWeight:700,color:selected?"var(--ru)":"var(--i2)",transition:"all .15s"}}
+              onClick={()=>{const cur=prefs.cuisines||[];sP({...prefs,cuisines:selected?cur.filter(x=>x!==name):[...cur,name]});}}>
+              <span style={{fontSize:20}}>{emoji}</span>{name}
+            </button>
           })}
         </div>
       </div>
@@ -1318,7 +1389,15 @@ Return ONLY valid JSON:
     </div>
   </div></div>}
 
-  {toast&&<div className="toast">{toast}</div>}
+  {toast&&<div className="toast" style={{display:"flex",alignItems:"center",gap:10}}>
+    <span>{toast}</span>
+    {undoSupply&&<button style={{border:"none",background:"rgba(255,255,255,.2)",color:"#fff",borderRadius:6,padding:"3px 8px",fontSize:11,fontWeight:700,cursor:"pointer"}}
+      onClick={()=>{
+        sS(supplies.map(x=>x.id===undoSupply.id?{...x,last:undoSupply.prevDate}:x));
+        setUndoSupply(null);setToast(null);
+        flash("Undone");
+      }}>Undo</button>}
+  </div>}
   </div></>);
 }
 
