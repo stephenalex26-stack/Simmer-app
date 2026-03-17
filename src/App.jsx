@@ -673,7 +673,12 @@ function SimmerApp({user}){
     const loved=Object.entries(ratings).filter(([,v])=>v==="loved").map(([k])=>k);
     const skip=Object.entries(ratings).filter(([,v])=>v==="skip").map(([k])=>k);
     const shuffled=[...recipes].sort(()=>Math.random()-.5);
-    const rb=shuffled.map(r=>`"${r.name}"${r.favorite?" ⭐":""} (${r.time}min, serves ${r.servings})`).join("\n");
+    const rb=shuffled.map(r=>{
+      let line=`"${r.name}"${r.favorite?" ⭐":""} (${r.time}min, serves ${r.servings})`;
+      if(r.ingredients)line+=`\n  Ingredients: ${Array.isArray(r.ingredients)?r.ingredients.join(", "):r.ingredients}`;
+      if(r.notes)line+=`\n  User notes: ${r.notes}`;
+      return line;
+    }).join("\n\n");
     const sb=dueSoon.length?`\nSUPPLIES DUE: ${dueSoon.map(s=>s.name).join(", ")}. Include "supplyReminders" array.`:"";
     const prevMeals=plan?.meals?.map(m=>m.name)||[];
     const prevNote=prevMeals.length?`\nLAST PLAN HAD: ${prevMeals.join(", ")}. You MUST pick a DIFFERENT combination this time.`:"";
@@ -692,6 +697,9 @@ function SimmerApp({user}){
     }
     const useUpNote=useUpIngredients.trim()?`\nUSE THESE UP THIS WEEK (high priority — build meals around these ingredients): ${useUpIngredients.trim()}`:"";
     const budgetNote=prefs.weeklyBudget?`\nWEEKLY GROCERY BUDGET: $${prefs.weeklyBudget}. Keep the total shopping list cost under this amount. Show estimated cost vs budget in the "cost" field like "$85 of $120 budget".`:"";
+    const availableItems=getAvailableItems();
+    const availableNote=availableItems.length?`\nUSER LIKELY HAS AT HOME (from recent purchases, exclude from shopping list if recipe needs them): ${[...new Set(availableItems)].slice(0,25).join(", ")}`:"";
+    const servingsNote=`\nSCALE ALL RECIPES to serve ${prefs.adults+prefs.kids} people (${prefs.adults} adults + ${prefs.kids} kids). Adjust ingredient amounts proportionally.`;
     const seed=Date.now().toString(36)+Math.random().toString(36).slice(2,6);
     try{
       const t=await ai([{role:"user",content:`Plan ${prefs.meals} dinners. Seed:${seed}
@@ -707,7 +715,7 @@ ${favs.length?`FAVORITES: ${favs.join(", ")}`:""}\
 ${loved.length?`\nFAMILY LOVED: ${loved.join(", ")}`:""}\
 ${skip.length?`\nAVOID: ${skip.join(", ")}`:""}\
 ${cuisineHints.length?`\nFAMILY LIKES: ${cuisineHints.join(", ")} cuisine`:""}\
-${prevNote}${pantryNote}${histNote}${purchaseNote}${storeNote}${useUpNote}${budgetNote}
+${prevNote}${pantryNote}${histNote}${purchaseNote}${storeNote}${useUpNote}${budgetNote}${availableNote}${servingsNote}
 ${sb}
 
 USER'S SAVED RECIPES — when using these, copy the EXACT ingredients and amounts as written. Do not invent new amounts or simplify them:
@@ -716,11 +724,18 @@ ${rb}
 For NEW recipes you suggest (not from the list above), provide complete ingredients with exact measurements (e.g. "2 tbsp olive oil", "1 tsp cumin") and step-by-step instructions with temperatures and times.
 
 CRITICAL FORMATTING RULES:
-- "ingredients" must be ARRAY of strings
-- "prep" must be ARRAY of SHORT steps
-- "finish" must be ARRAY of SHORT steps
-- shoppingList items: each item is a string, but ALSO include a "storeMap" object that maps item names to store names
-- Each meal needs "noPrepFinish" array
+- "ingredients" must be ARRAY of strings with EXACT measurements
+- "prep" must be ARRAY of SHORT steps (one task per step, include temps/times)
+- "finish" must be ARRAY of SHORT steps (one task per step, include temps/times)
+- Each meal needs "noPrepFinish" array (full instructions if prep was skipped)
+- If the user has notes on a saved recipe, ALWAYS apply them (e.g. "add extra garlic" means add more garlic to the recipe)
+
+SHOPPING LIST RULES:
+- COMBINE duplicate ingredients across meals (e.g. if 2 recipes need onions, list "3 onions" not two separate entries)
+- Include EXACT quantities — "2 lbs chicken thighs" not just "chicken thighs"
+- Exclude pantry staples the user already has (listed above)
+- Exclude items the user likely has at home from recent purchases (listed above)
+- Include a "storeMap" object mapping each item string to the best store name
 
 INGREDIENT ACCOUNTABILITY (most important rule):
 - Every single ingredient listed in "ingredients" MUST appear by name in either the prep steps or the finish steps — no exceptions.
