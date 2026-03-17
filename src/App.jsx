@@ -295,12 +295,12 @@ export default function App(){
 }
 
 function SimmerApp({user}){
-  const[recipes,setRecipes]=useState(()=>ld(LS.r,RECIPES));
+  const[recipes,setRecipes]=useState(()=>{const r=ld(LS.r,RECIPES);return r&&r.length?r:RECIPES;});
   const[prefs,setPrefs]=useState(()=>{const p=ld(LS.p,DEF_PREFS);return{...DEF_PREFS,...p,stores:p.stores&&p.stores.length?p.stores:DEF_PREFS.stores};});
   const[plan,setPlan]=useState(()=>ld(LS.pl,null));
   const[nextPlan,setNextPlan]=useState(()=>ld(LS.pl2,null));
   const[planView,setPlanView]=useState("this"); // "this" | "next"
-  const[supplies,setSupplies]=useState(()=>ld(LS.s,SUPPLIES));
+  const[supplies,setSupplies]=useState(()=>{const s=ld(LS.s,SUPPLIES);return s&&s.length?s:SUPPLIES;});
   const[checked,setChecked]=useState(()=>ld(LS.ck,{}));
   const[ratings,setRatings]=useState(()=>ld(LS.rt,{}));
   const[tab,setTab]=useState("home");
@@ -441,9 +441,34 @@ function SimmerApp({user}){
   };
 
   // ── Receipt scanner ──
-  const scanImage=async(file)=>{
+  const scanFile=async(file)=>{
     setScanning(true);setScannedResult(null);
     try{
+      if(file.type==="application/pdf"){
+        // PDF: extract text client-side, then parse
+        const arrayBuf=await file.arrayBuffer();
+        const bytes=new Uint8Array(arrayBuf);
+        // Simple PDF text extraction — pull readable strings
+        let text="";
+        const decoder=new TextDecoder("utf-8",{fatal:false});
+        const raw=decoder.decode(bytes);
+        // extract text between BT/ET blocks or parenthesized strings
+        const matches=raw.match(/\(([^)]{2,})\)/g)||[];
+        text=matches.map(m=>m.slice(1,-1)).join(" ");
+        if(text.trim().length<20){
+          // fallback: grab all printable runs
+          text=raw.replace(/[^\x20-\x7E\n]/g," ").replace(/\s+/g," ");
+        }
+        if(text.trim().length>20){
+          setScanText(text.trim());
+          setScanning(false);
+          return;// user can review + hit "Read Receipt"
+        }
+        // if text extraction failed, convert first page to image via canvas
+        flash("PDF text extraction limited — try pasting the receipt text instead");
+        setScanning(false);return;
+      }
+      // Image file
       const base64=await new Promise((res,rej)=>{
         const reader=new FileReader();
         reader.onload=()=>res(reader.result.split(",")[1]);
@@ -454,7 +479,7 @@ function SimmerApp({user}){
       const parsed=JSON.parse(t.replace(/```json|```/g,"").trim());
       setScannedResult(parsed);
       setScanStore(parsed.storeName||"");
-    }catch(e){flash("Couldn't read receipt — try pasting the text instead");}
+    }catch(e){flash("Couldn't read that file — try pasting the text instead");}
     setScanning(false);
   };
 
@@ -1530,52 +1555,56 @@ Return ONLY valid JSON:
     <div className="mdl-hd"><h3>Add Receipt</h3><button className="ib" onClick={()=>setModal(null)}>{I.x}</button></div>
     <div className="mdl-bd">
       {!scannedResult?<>
-        <input type="file" ref={fileRef} accept="image/*" capture="environment" style={{display:"none"}} onChange={e=>{if(e.target.files[0])scanImage(e.target.files[0])}}/>
+        <input type="file" ref={fileRef} accept="image/*,.pdf,application/pdf" style={{display:"none"}} onChange={e=>{if(e.target.files[0])scanFile(e.target.files[0])}}/>
 
-        {/* paste is the primary path — every store sends email receipts */}
-        <div style={{marginBottom:12}}>
-          <label className="fl">Paste your receipt or order confirmation email</label>
+        <p style={{fontSize:13,color:"var(--i2)",marginBottom:16,lineHeight:1.5}}>Add your grocery receipts to help Simmer learn what you buy and skip items you already have.</p>
+
+        {/* Three clear options */}
+        <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:16}}>
+          <div className="upload-zone" style={{padding:"16px",display:"flex",alignItems:"center",gap:14,textAlign:"left",borderStyle:"solid",borderWidth:"1.5px",borderColor:"var(--sd)"}}
+            onClick={()=>{fileRef.current.accept="image/*,.pdf,application/pdf";fileRef.current.removeAttribute("capture");fileRef.current.click();}}>
+            <div style={{width:44,height:44,background:"var(--blb)",borderRadius:12,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,fontSize:20}}>📎</div>
+            <div>
+              <div style={{fontSize:14,fontWeight:700,color:"var(--ink)"}}>Upload a file</div>
+              <div style={{fontSize:12,color:"var(--i3)",marginTop:2}}>Photo, screenshot, or PDF of a receipt</div>
+            </div>
+          </div>
+        </div>
+
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14}}>
+          <div style={{flex:1,height:1,background:"var(--sand)"}}/>
+          <span style={{fontSize:11,color:"var(--i3)",fontWeight:600}}>OR PASTE TEXT</span>
+          <div style={{flex:1,height:1,background:"var(--sand)"}}/>
+        </div>
+
+        <div style={{marginBottom:4}}>
+          <label className="fl">Paste receipt or order confirmation</label>
+          <p style={{fontSize:11,color:"var(--i3)",marginBottom:6}}>Works with Instacart, Costco, Wegmans, Amazon Fresh, and more</p>
           <div style={{position:"relative"}}>
-            <textarea className="fta" style={{minHeight:140,fontSize:13,paddingBottom:48}}
+            <textarea className="fta" style={{minHeight:120,fontSize:13,paddingBottom:scanText.trim()?52:12}}
               value={scanText} onChange={e=>setScanText(e.target.value)}
-              placeholder={"Paste your Instacart, Costco, Wegmans, or any grocery confirmation email here..."}
-              autoFocus/>
+              placeholder={"Copy and paste your email receipt or order confirmation here..."}/>
             {scanText.trim()&&<button className="btn bg"
-              style={{position:"absolute",bottom:8,right:8,left:8,width:"auto",padding:"9px",fontSize:13}}
+              style={{position:"absolute",bottom:8,right:8,left:8,width:"auto",padding:"10px",fontSize:13}}
               disabled={scanning} onClick={scanTextContent}>
               {scanning?<><div className="dots" style={{padding:0,display:"inline-flex",gap:4}}><span/><span/><span/></div> Reading...</>:"Read Receipt"}
             </button>}
           </div>
         </div>
 
-        {/* photo as secondary option */}
-        <div style={{display:"flex",alignItems:"center",gap:10,marginTop:4}}>
-          <div style={{flex:1,height:1,background:"var(--sand)"}}/>
-          <span style={{fontSize:11,color:"var(--i3)",fontWeight:600}}>OR</span>
-          <div style={{flex:1,height:1,background:"var(--sand)"}}/>
-        </div>
-        <div className="upload-zone" style={{padding:"14px",marginTop:10,display:"flex",alignItems:"center",gap:12,textAlign:"left"}}
-          onClick={()=>fileRef.current?.click()}>
-          <div style={{fontSize:24}}>📷</div>
-          <div>
-            <div style={{fontSize:13,fontWeight:700,color:"var(--ink)"}}>Take or upload a photo</div>
-            <div style={{fontSize:11,color:"var(--i3)"}}>Photo of a printed receipt</div>
-          </div>
-        </div>
-
         {scanning&&!scanText.trim()&&<div style={{textAlign:"center",marginTop:16}}>
           <div className="dots"><span/><span/><span/></div>
-          <p style={{fontSize:13,color:"var(--i3)",marginTop:8}}>Reading receipt...</p>
+          <p style={{fontSize:13,color:"var(--i3)",marginTop:8}}>Reading your receipt...</p>
         </div>}
       </>:<>
         {/* scanned result review */}
         <div style={{marginBottom:16}}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
             <div>
-              <div style={{fontFamily:"var(--hd)",fontSize:18,fontWeight:500}}>{scannedResult.storeName||"Receipt"}</div>
-              <div style={{fontSize:13,color:"var(--i3)"}}>{scannedResult.date||"Today"}{scannedResult.total?` · ${scannedResult.total}`:""}</div>
+              <div style={{fontFamily:"var(--hd)",fontSize:20,fontWeight:500}}>{scannedResult.storeName||"Receipt"}</div>
+              <div style={{fontSize:13,color:"var(--i3)",marginTop:2}}>{scannedResult.date||"Today"}{scannedResult.total?` · ${scannedResult.total}`:""}</div>
             </div>
-            <button className="btn bs bsm" onClick={()=>setScannedResult(null)}>Re-scan</button>
+            <button className="btn bo bsm" onClick={()=>{setScannedResult(null);setScanText("")}}>Re-scan</button>
           </div>
           <div className="fg">
             <label className="fl">Store</label>
@@ -1587,25 +1616,28 @@ Return ONLY valid JSON:
                 <option value={scannedResult.storeName}>{scannedResult.storeName}</option>}
             </select>
           </div>
-          <div style={{fontSize:12,fontWeight:700,color:"var(--i3)",marginBottom:6}}>{scannedResult.items?.length||0} ITEMS FOUND</div>
-          <div style={{maxHeight:300,overflowY:"auto",border:"1px solid var(--sand)",borderRadius:10}}>
-            {(scannedResult.items||[]).map((item,i)=><div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"9px 12px",borderBottom:i<scannedResult.items.length-1?"1px solid var(--sand)":"none"}}>
-              <div>
-                <div style={{fontSize:13.5,fontWeight:600}}>{item.name}</div>
-                <div style={{fontSize:11,color:"var(--i3)"}}>{item.category}{item.quantity>1?` · qty ${item.quantity}`:""}</div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+            <span style={{fontSize:12,fontWeight:700,color:"var(--i3)"}}>{scannedResult.items?.length||0} ITEMS FOUND</span>
+            {scannedResult.total&&<span style={{fontSize:13,fontWeight:700,color:"var(--sa)"}}>{scannedResult.total}</span>}
+          </div>
+          <div style={{maxHeight:300,overflowY:"auto",border:"1px solid var(--sand)",borderRadius:12,background:"var(--bg)"}}>
+            {(scannedResult.items||[]).map((item,i)=><div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 14px",borderBottom:i<scannedResult.items.length-1?"1px solid var(--sand)":"none",background:i%2===0?"transparent":"rgba(255,255,255,.5)"}}>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontSize:13.5,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{item.name}</div>
+                <div style={{fontSize:11,color:"var(--i3)",marginTop:1}}>{item.category}{item.quantity>1?` · qty ${item.quantity}`:""}</div>
               </div>
-              {item.price&&<span style={{fontSize:13,color:"var(--i2)",whiteSpace:"nowrap",marginLeft:8}}>{item.price}</span>}
+              {item.price&&<span style={{fontSize:13,fontWeight:600,color:"var(--i2)",whiteSpace:"nowrap",marginLeft:10}}>{item.price}</span>}
             </div>)}
           </div>
         </div>
       </>}
     </div>
     {scannedResult&&<div className="mdl-ft">
-      <button className="btn bs" onClick={()=>setScannedResult(null)}>Back</button>
+      <button className="btn bs" onClick={()=>{setScannedResult(null);setScanText("")}}>Back</button>
       <button className="btn bg" onClick={()=>{
         const store=scanStore||scannedResult.storeName||userStores[0]||"Unknown Store";
         savePurchase(scannedResult,store);
-      }}>Save to History</button>
+      }}>Save {scannedResult.items?.length||0} Items</button>
     </div>}
   </div></div>}
 
