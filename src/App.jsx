@@ -235,6 +235,9 @@ export default function App(){
   const[authScreen,setAuthScreen]=useState("login"); // "login" | "signup"
   const[authEmail,setAuthEmail]=useState("");
   const[authPass,setAuthPass]=useState("");
+  const[authFirstName,setAuthFirstName]=useState("");
+  const[authLastName,setAuthLastName]=useState("");
+  const[authShowPass,setAuthShowPass]=useState(false);
   const[authError,setAuthError]=useState(null);
   const[authBusy,setAuthBusy]=useState(false);
 
@@ -254,7 +257,7 @@ export default function App(){
     setAuthError(null);setAuthBusy(true);
     try{
       if(authScreen==="signup"){
-        const{error}=await supabase.auth.signUp({email:authEmail,password:authPass});
+        const{error}=await supabase.auth.signUp({email:authEmail,password:authPass,options:{data:{first_name:authFirstName.trim(),last_name:authLastName.trim()}}});
         if(error)throw error;
         setAuthError("Check your email for a confirmation link!");
       }else{
@@ -272,8 +275,15 @@ export default function App(){
     <h2 style={{fontFamily:"var(--hd)",fontSize:26,marginBottom:4}}>Simmer</h2>
     <p style={{color:"var(--i2)",fontSize:14,marginBottom:24}}>Dinner's handled.</p>
     <form onSubmit={handleAuth}>
+      {authScreen==="signup"&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:0}}>
+        <input className="fi" placeholder="First name" value={authFirstName} onChange={e=>setAuthFirstName(e.target.value)}/>
+        <input className="fi" placeholder="Last name" value={authLastName} onChange={e=>setAuthLastName(e.target.value)}/>
+      </div>}
       <input className="fi" type="email" placeholder="Email" value={authEmail} onChange={e=>setAuthEmail(e.target.value)} required autoFocus/>
-      <input className="fi" type="password" placeholder="Password" value={authPass} onChange={e=>setAuthPass(e.target.value)} required minLength={6}/>
+      <div style={{position:"relative"}}>
+        <input className="fi" type={authShowPass?"text":"password"} placeholder="Password" value={authPass} onChange={e=>setAuthPass(e.target.value)} required minLength={6} style={{paddingRight:48}}/>
+        <button type="button" style={{position:"absolute",right:12,top:"50%",transform:"translateY(-50%)",border:"none",background:"none",cursor:"pointer",fontSize:12,fontWeight:700,color:"var(--i3)",fontFamily:"var(--bd)"}} onClick={()=>setAuthShowPass(v=>!v)}>{authShowPass?"Hide":"Show"}</button>
+      </div>
       {authError&&<div style={{fontSize:13,color:authScreen==="signup"&&authError.includes("Check")?"var(--sa)":"var(--rd)",marginBottom:10,padding:"8px 12px",background:authScreen==="signup"&&authError.includes("Check")?"var(--sab)":"var(--rb)",borderRadius:10}}>{authError}</div>}
       <button className="btn bg" type="submit" disabled={authBusy} style={{marginTop:4}}>{authBusy?"...":(authScreen==="login"?"Sign In":"Create Account")}</button>
     </form>
@@ -339,15 +349,19 @@ function SimmerApp({user}){
     },800);
   },[user?.id]);
 
+  // refs to avoid stale closures in debounced saves
+  const stateRef=useRef({});
+  stateRef.current={plan,nextPlan,ratings,checked,pantry,history};
+
   const sR=v=>{setRecipes(v);sv(LS.r,v);debouncedSave("recipes",v)};
   const sP=v=>{setPrefs(v);sv(LS.p,v);debouncedSave("user_prefs",v)};
-  const sPl=v=>{setPlan(v);sv(LS.pl,v);debouncedSave("plans",{current_plan:v,next_plan:nextPlan})};
-  const sNPl=v=>{setNextPlan(v);sv(LS.pl2,v);debouncedSave("plans",{current_plan:plan,next_plan:v})};
+  const sPl=v=>{setPlan(v);sv(LS.pl,v);debouncedSave("plans",{current_plan:v,next_plan:stateRef.current.nextPlan})};
+  const sNPl=v=>{setNextPlan(v);sv(LS.pl2,v);debouncedSave("plans",{current_plan:stateRef.current.plan,next_plan:v})};
   const sS=v=>{setSupplies(v);sv(LS.s,v);debouncedSave("supplies",v)};
-  const sC=v=>{setChecked(v);sv(LS.ck,v);debouncedSave("user_data",{checked:v,ratings,pantry,history})};
-  const sRt=v=>{setRatings(v);sv(LS.rt,v);debouncedSave("user_data",{ratings:v,checked,pantry,history})};
-  const sPa=v=>{setPantry(v);sv(LS.pa,v);debouncedSave("user_data",{pantry:v,ratings,checked,history})};
-  const sHi=v=>{setHistory(v);sv(LS.hi,v);debouncedSave("user_data",{history:v,ratings,checked,pantry})};
+  const sC=v=>{setChecked(v);sv(LS.ck,v);debouncedSave("user_data",{checked:v,ratings:stateRef.current.ratings,pantry:stateRef.current.pantry,history:stateRef.current.history})};
+  const sRt=v=>{setRatings(v);sv(LS.rt,v);debouncedSave("user_data",{ratings:v,checked:stateRef.current.checked,pantry:stateRef.current.pantry,history:stateRef.current.history})};
+  const sPa=v=>{setPantry(v);sv(LS.pa,v);debouncedSave("user_data",{pantry:v,ratings:stateRef.current.ratings,checked:stateRef.current.checked,history:stateRef.current.history})};
+  const sHi=v=>{setHistory(v);sv(LS.hi,v);debouncedSave("user_data",{history:v,ratings:stateRef.current.ratings,checked:stateRef.current.checked,pantry:stateRef.current.pantry})};
   const sPh=v=>{setPurchases(v);sv(LS.ph,v);debouncedSave("purchases",v)};
 
   // ── Load from Supabase on mount, migrate localStorage if needed ──
@@ -371,7 +385,7 @@ function SimmerApp({user}){
       }
       setCloudLoaded(true);
     })();
-  },[user?.id]);
+  },[user?.id,cloudLoaded]);
 
   const flash=m=>{setToast(m);setTimeout(()=>setToast(null),2200)};
   const toggleFav=id=>sR(recipes.map(r=>r.id===id?{...r,favorite:!r.favorite}:r));
@@ -954,7 +968,7 @@ Return ONLY valid JSON:
   {/* ── HOME ── */}
   {tab==="home"&&<>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
-      <h1 className="pg-t">Hey there 🍲</h1>
+      <h1 className="pg-t">{user?.user_metadata?.first_name?`Hey ${user.user_metadata.first_name} 🍲`:"Hey there 🍲"}</h1>
       <button style={{display:"flex",alignItems:"center",gap:5,padding:"7px 12px",border:"1.5px solid var(--sd)",borderRadius:10,background:"none",cursor:"pointer",fontSize:12,fontWeight:600,color:"var(--i2)"}} onClick={()=>setTab("settings")}>{I.gear} <span>Settings</span></button>
     </div>
     {todayMeal?(<div className="tonight">
@@ -1456,6 +1470,7 @@ Return ONLY valid JSON:
         <span className="sync-dot" style={{background:syncing?"var(--am)":"var(--sa)"}}/>
         <span style={{fontSize:13,color:"var(--i2)"}}>{syncing?"Syncing...":"Synced to cloud"}</span>
       </div>
+      <p style={{fontSize:13,color:"var(--i2)",marginBottom:2,fontWeight:600}}>{[user?.user_metadata?.first_name,user?.user_metadata?.last_name].filter(Boolean).join(" ")||""}</p>
       <p style={{fontSize:12,color:"var(--i3)",marginBottom:12}}>{user?.email}</p>
       <button className="btn bo" style={{width:"100%",color:"var(--rd)",borderColor:"var(--rd)"}} onClick={async()=>{await supabase.auth.signOut();}}>Sign Out</button>
     </div>
