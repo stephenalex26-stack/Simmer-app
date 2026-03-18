@@ -228,6 +228,7 @@ html,body{font-family:var(--bd);background:var(--bg);color:var(--ink);-webkit-fo
 .auth-box .fi{margin-bottom:10px}
 .auth-toggle{margin-top:16px;font-size:13px;color:var(--i2)}.auth-toggle button{border:none;background:none;color:var(--ru);font-weight:700;cursor:pointer;font-family:var(--bd);font-size:13px}
 .sync-dot{width:6px;height:6px;border-radius:50%;display:inline-block;margin-right:6px}
+@media(prefers-color-scheme:dark){:root{--bg:#1A1816;--card:#242220;--sand:#2E2B27;--sd:#3A3632;--ink:#F0EBE3;--i2:#BDB5A8;--i3:#8A8275;--i4:#5A5448;--ru:#E06840;--ruh:#C85A35;--rub:#2E1F18;--sa:#5A9E6E;--sab:#1A2E20;--am:#D4992A;--amb:#2E2818;--rb:#2E1816;--rd:#E04A3A;--bl:#4A9ED6;--blb:#182430;--sh:0 1px 4px rgba(0,0,0,.2);--s2:0 6px 24px rgba(0,0,0,.3)}}
 `;
 
 /* ═══ AUTH WRAPPER ═══ */
@@ -349,6 +350,10 @@ function SimmerApp({user}){
   const[scanStore,setScanStore]=useState("");
   const[useUpIngredients,setUseUpIngredients]=useState("");
   const[undoSupply,setUndoSupply]=useState(null); // {id, prevDate}
+  const[cookingMode,setCookingMode]=useState(false);
+  const[cookingStep,setCookingStep]=useState(0);
+  const[settingsOpen,setSettingsOpen]=useState({"household":true,"stores":true,"prefs":false,"account":false});
+  const[recTagFilter,setRecTagFilter]=useState("");
   const[cloudLoaded,setCloudLoaded]=useState(false);
   const[syncing,setSyncing]=useState(false);
   const fileRef=useRef();
@@ -1080,10 +1085,7 @@ Return ONLY valid JSON:
       <div className="tonight-label">Tonight's Dinner</div>
       <div className="tonight-meal">{todayMeal.name}</div>
       <div className="tonight-time">{todayMeal.time} min active cooking</div>
-      <div className="tonight-steps">
-        <div className="tonight-sub">What to do</div>
-        <ol style={{paddingLeft:18,margin:0}}>{fmt(todayMeal.finish).map((s,j)=><li key={j} style={{padding:"3px 0",lineHeight:1.5}}>{s}</li>)}</ol>
-      </div>
+      <button className="btn bg" style={{marginTop:12}} onClick={()=>{setCookingStep(0);setCookingMode(true);}}>Start Cooking</button>
     </div>):(
       <div className="tonight" style={{textAlign:"center",cursor:"pointer"}} onClick={()=>{if(!plan)generate();else setTab("plan")}}>
         <div style={{fontSize:32,marginBottom:8}}>🍽</div>
@@ -1407,6 +1409,7 @@ Return ONLY valid JSON:
       <button className={`dchip ${recFilter==="all"?"on":""}`} onClick={()=>setRecFilter("all")} style={{fontSize:12,padding:"6px 12px"}}>All</button>
       <button className={`dchip ${recFilter==="fav"?"on":""}`} onClick={()=>setRecFilter("fav")} style={{fontSize:12,padding:"6px 12px"}}>Favorites</button>
     </div>
+    {(()=>{const allTags=[...new Set(recipes.flatMap(r=>(r.tags||"").split(",").map(t=>t.trim()).filter(Boolean)))];return allTags.length>0?<div style={{display:"flex",gap:4,marginBottom:14,flexWrap:"wrap",overflowX:"auto"}}>{allTags.map(tag=><button key={tag} className={`dchip ${recTagFilter===tag?"on":""}`} style={{fontSize:11,padding:"5px 10px"}} onClick={()=>setRecTagFilter(recTagFilter===tag?"":tag)}>{tag}</button>)}</div>:null})()}
     <div className="cd" style={{marginBottom:14}}>
       <label className="fl">Add a recipe</label>
       <textarea className="fta" style={{minHeight:60,marginBottom:8}} value={importText} onChange={e=>setImportText(e.target.value)} placeholder="Paste a recipe URL or the full recipe text..."/>
@@ -1414,11 +1417,13 @@ Return ONLY valid JSON:
       <button className="btn bg" disabled={!importText.trim()||importing||/instagram\.com/i.test(importText.trim())} onClick={importRecipe}>{importing?"Reading recipe...":importText.trim()&&/^https?:\/\//i.test(importText.trim())&&!/instagram\.com/i.test(importText.trim())?"Import from Link":"Add This Recipe"}</button>
     </div>
     <button className="btn bo" style={{marginBottom:14,width:"100%"}} onClick={()=>setModal({type:"recipe"})}>{I.plus} Type it in manually</button>
-    {recipes.filter(r=>recFilter==="fav"?r.favorite:true).filter(r=>!recSearch||r.name.toLowerCase().includes(recSearch.toLowerCase())).sort((a,b)=>b.favorite-a.favorite).map(r=><div className="rc" key={r.id}>
+    {recipes.filter(r=>recFilter==="fav"?r.favorite:true).filter(r=>!recSearch||r.name.toLowerCase().includes(recSearch.toLowerCase())).filter(r=>!recTagFilter||(r.tags||"").split(",").map(t=>t.trim()).includes(recTagFilter)).sort((a,b)=>b.favorite-a.favorite).map(r=><div className="rc" key={r.id}>
       <div className="rc-top">
         <div style={{display:"flex",gap:10,alignItems:"flex-start"}}>
           <button className={`fav-btn ${r.favorite?"on":""}`} onClick={()=>toggleFav(r.id)}>{r.favorite?I.heartOn:I.heart}</button>
-          <div><div className="rc-name">{r.name}</div><div className="rc-meta"><span className="pill" style={{background:"var(--rub)",color:"var(--ru)"}}>{r.time}m</span><span className="pill" style={{background:"var(--sab)",color:"var(--sa)"}}>Serves {r.servings}</span>{r.source&&<span className="pill" style={{background:"var(--amb)",color:"var(--am)"}}>{r.source}</span>}</div></div>
+          <div><div className="rc-name">{r.name}</div><div className="rc-meta"><span className="pill" style={{background:"var(--rub)",color:"var(--ru)"}}>{r.time}m</span><span className="pill" style={{background:"var(--sab)",color:"var(--sa)"}}>Serves {r.servings}</span>{r.source&&<span className="pill" style={{background:"var(--amb)",color:"var(--am)"}}>{r.source}</span>}</div>
+          {r.tags&&r.tags.trim()&&<div className="rc-meta" style={{marginTop:3}}>{r.tags.split(",").map(t=>t.trim()).filter(Boolean).map(tag=><span key={tag} className="pill" style={{background:"var(--blb)",color:"var(--bl)",fontSize:10}}>{tag}</span>)}</div>}
+          </div>
         </div>
         <div style={{display:"flex",gap:2}}><button className="ib" onClick={()=>setModal({type:"recipe",data:r})}>{I.edit}</button>{confirm===r.id?<><button style={{border:"none",background:"none",color:"var(--rd)",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"var(--bd)"}} onClick={()=>{sR(recipes.filter(x=>x.id!==r.id));setConfirm(null);flash("Removed")}}>Delete?</button><button style={{border:"none",background:"none",color:"var(--i3)",fontSize:12,cursor:"pointer",fontFamily:"var(--bd)"}} onClick={()=>setConfirm(null)}>Cancel</button></>:<button className="ib dng" onClick={()=>setConfirm(r.id)}>{I.trash}</button>}</div>
       </div>
@@ -1512,6 +1517,11 @@ Return ONLY valid JSON:
       <span style={{fontSize:12,color:"var(--sa)",fontWeight:600}}><span className="sync-dot" style={{background:syncing?"var(--am)":"var(--sa)"}}/>Synced</span>
     </div>
     <div className="cd">
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer",WebkitTapHighlightColor:"transparent"}} onClick={()=>setSettingsOpen(s=>({...s,household:!s.household}))}>
+        <div className="fl" style={{fontSize:15,marginBottom:0}}>Household</div>
+        <span style={{transform:settingsOpen.household?"rotate(180deg)":"none",transition:"transform .2s",color:"var(--i4)"}}>{I.chev}</span>
+      </div>
+      {settingsOpen.household&&<div style={{marginTop:12}}>
       <div className="frow">
         <div className="fg"><label className="fl">Adults</label><select className="fsel" value={prefs.adults} onChange={e=>sP({...prefs,adults:+e.target.value})}>{[1,2,3,4].map(n=><option key={n} value={n}>{n}</option>)}</select></div>
         <div className="fg"><label className="fl">Kids</label><select className="fsel" value={prefs.kids} onChange={e=>sP({...prefs,kids:+e.target.value})}>{[0,1,2,3,4,5,6].map(n=><option key={n} value={n}>{n}</option>)}</select></div>
@@ -1521,10 +1531,15 @@ Return ONLY valid JSON:
         <div className="fg"><label className="fl">Max cook time</label><select className="fsel" value={prefs.time} onChange={e=>sP({...prefs,time:+e.target.value})}>{[15,20,25,30,45].map(n=><option key={n} value={n}>{n} min</option>)}</select></div>
       </div>
       <div className="fg"><label className="fl">Prep days</label><div className="dpick">{DAYS.map(d=><button key={d} className={`dchip ${(prefs.prepDays||["Sunday"]).includes(d)?"on":""}`} onClick={()=>{const ds=prefs.prepDays||["Sunday"];const n=ds.includes(d)?ds.filter(x=>x!==d):[...ds,d];if(n.length)sP({...prefs,prepDays:n})}}>{d.slice(0,3)}</button>)}</div></div>
+      </div>}
     </div>
     {/* My Stores */}
     <div className="cd">
-      <div className="fl" style={{fontSize:15,marginBottom:4}}>My Stores</div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer",WebkitTapHighlightColor:"transparent"}} onClick={()=>setSettingsOpen(s=>({...s,stores:!s.stores}))}>
+        <div className="fl" style={{fontSize:15,marginBottom:0}}>My Stores</div>
+        <span style={{transform:settingsOpen.stores?"rotate(180deg)":"none",transition:"transform .2s",color:"var(--i4)"}}>{I.chev}</span>
+      </div>
+      {settingsOpen.stores&&<div style={{marginTop:8}}>
       <p style={{fontSize:12,color:"var(--i3)",marginBottom:12}}>Used to split shopping lists and tag restock items. Each family member can have their own setup.</p>
       <div style={{display:"flex",flexWrap:"wrap",gap:4,marginBottom:10}}>
         {userStores.map(s=><span key={s} className="store-chip" style={{background:"var(--rub)",color:"var(--ru)",border:"1px solid #EAC4B8"}}>
@@ -1537,9 +1552,14 @@ Return ONLY valid JSON:
           onKeyDown={e=>{if(e.key==="Enter")addStore(storeInput)}}/>
         <button className="btn bg bsm" onClick={()=>addStore(storeInput)}>Add</button>
       </div>
+      </div>}
     </div>
     <div className="cd">
-      <div className="fl" style={{fontSize:15,marginBottom:12}}>Meal Preferences</div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer",WebkitTapHighlightColor:"transparent"}} onClick={()=>setSettingsOpen(s=>({...s,prefs:!s.prefs}))}>
+        <div className="fl" style={{fontSize:15,marginBottom:0}}>Meal Preferences</div>
+        <span style={{transform:settingsOpen.prefs?"rotate(180deg)":"none",transition:"transform .2s",color:"var(--i4)"}}>{I.chev}</span>
+      </div>
+      {settingsOpen.prefs&&<div style={{marginTop:12}}>
       <div className="fg"><label className="fl">Protein</label><select className="fsel" value={prefs.proteinPriority||"medium"} onChange={e=>sP({...prefs,proteinPriority:e.target.value})}><option value="high">High protein (meat every night)</option><option value="medium">Balanced</option><option value="low">Less meat / more veggies</option><option value="vegetarian">Vegetarian</option><option value="vegan">Vegan</option></select></div>
       <div className="frow">
         <div className="fg"><label className="fl">Max pasta/wk</label><select className="fsel" value={prefs.maxPastaPerWeek??2} onChange={e=>sP({...prefs,maxPastaPerWeek:+e.target.value})}>{[0,1,2,3,4,5].map(n=><option key={n} value={n}>{n||"None"}</option>)}</select></div>
@@ -1574,10 +1594,15 @@ Return ONLY valid JSON:
           })}
         </div>
       </div>
+      </div>}
     </div>
     {/* Account section */}
     <div className="cd" style={{marginTop:8}}>
-      <div className="fl" style={{fontSize:15,marginBottom:12}}>Account</div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer",WebkitTapHighlightColor:"transparent"}} onClick={()=>setSettingsOpen(s=>({...s,account:!s.account}))}>
+        <div className="fl" style={{fontSize:15,marginBottom:0}}>Account</div>
+        <span style={{transform:settingsOpen.account?"rotate(180deg)":"none",transition:"transform .2s",color:"var(--i4)"}}>{I.chev}</span>
+      </div>
+      {settingsOpen.account&&<div style={{marginTop:12}}>
       <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
         <span className="sync-dot" style={{background:syncing?"var(--am)":"var(--sa)"}}/>
         <span style={{fontSize:13,color:"var(--i2)"}}>{syncing?"Syncing...":"Synced to cloud"}</span>
@@ -1585,6 +1610,7 @@ Return ONLY valid JSON:
       <p style={{fontSize:13,color:"var(--i2)",marginBottom:2,fontWeight:600}}>{[user?.user_metadata?.first_name,user?.user_metadata?.last_name].filter(Boolean).join(" ")||""}</p>
       <p style={{fontSize:12,color:"var(--i3)",marginBottom:12}}>{user?.email}</p>
       <button className="btn bo" style={{width:"100%",color:"var(--rd)",borderColor:"var(--rd)"}} onClick={async()=>{if(!window.confirm('Sign out?'))return;Object.values(LS).forEach(k=>localStorage.removeItem(k));await supabase.auth.signOut();}}>Sign Out</button>
+      </div>}
     </div>
   </>}
   </main>
@@ -1724,6 +1750,21 @@ Return ONLY valid JSON:
     </div>
   </div></div>}
 
+  {cookingMode&&todayMeal&&(()=>{const steps=fmt(todayMeal.finish);const total=steps.length;return<div style={{position:"fixed",inset:0,background:"var(--bg)",zIndex:250,display:"flex",flexDirection:"column",animation:"fi .15s"}}>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"16px 20px",borderBottom:"1px solid var(--sd)"}}>
+      <div style={{fontFamily:"var(--hd)",fontSize:18,fontWeight:500}}>{todayMeal.name}</div>
+      <button className="ib" onClick={()=>setCookingMode(false)}>{I.x}</button>
+    </div>
+    <div style={{flex:1,display:"flex",flexDirection:"column",justifyContent:"center",alignItems:"center",padding:"24px 20px",textAlign:"center"}}>
+      <div style={{fontSize:13,fontWeight:700,color:"var(--i3)",textTransform:"uppercase",letterSpacing:".8px",marginBottom:16}}>Step {cookingStep+1} of {total}</div>
+      <div style={{fontSize:20,lineHeight:1.55,color:"var(--ink)",maxWidth:460}}>{steps[cookingStep]||"Done!"}</div>
+    </div>
+    <div style={{padding:"16px 20px 24px",borderTop:"1px solid var(--sd)",display:"flex",gap:10}}>
+      <button className="btn bs" style={{flex:0,padding:"14px 20px",fontSize:13}} disabled={cookingStep<=0} onClick={()=>setCookingStep(s=>s-1)}>Previous</button>
+      {cookingStep<total-1?<button className="btn bg" style={{flex:1,fontSize:15}} onClick={()=>setCookingStep(s=>s+1)}>Next Step</button>:<button className="btn bg" style={{flex:1,fontSize:15,background:"var(--sa)"}} onClick={()=>setCookingMode(false)}>Done</button>}
+    </div>
+  </div>})()}
+
   {toast&&<div className="toast" style={{display:"flex",alignItems:"center",gap:10}}>
     <span>{toast}</span>
     {undoSupply&&<button style={{border:"none",background:"rgba(255,255,255,.2)",color:"#fff",borderRadius:6,padding:"3px 8px",fontSize:11,fontWeight:700,cursor:"pointer"}}
@@ -1740,6 +1781,7 @@ function RecipeForm({r,onSave}){
   const[n,sN]=useState(r?.name||"");const[t,sT]=useState(r?.time||25);const[sv,sSv]=useState(r?.servings||4);
   const[ig,sIg]=useState(r?.ingredients||"");const[p,sP]=useState(r?.prep||"");const[f,sF]=useState(r?.finish||"");
   const[sr,sSr]=useState(r?.source||"");const[m,sM]=useState(!!(r?.prep||r?.finish));const[nt,sNt]=useState(r?.notes||"");
+  const[tg,sTg]=useState(r?.tags||"");
   return<><div className="mdl-bd">
     <div className="fg"><label className="fl">What's the dish?</label><input className="fi" value={n} onChange={e=>sN(e.target.value)} placeholder="Chicken Fajitas" autoFocus/></div>
     <div className="frow"><div className="fg"><label className="fl">Time (min)</label><input className="fi" type="number" inputMode="numeric" value={t} onChange={e=>sT(e.target.value)}/></div><div className="fg"><label className="fl">Serves</label><input className="fi" type="number" inputMode="numeric" value={sv} onChange={e=>sSv(e.target.value)}/></div></div>
@@ -1747,9 +1789,10 @@ function RecipeForm({r,onSave}){
     {!m&&<button className="btn bo" style={{marginBottom:14,width:"100%"}} onClick={()=>sM(true)}>+ Add prep & cooking steps</button>}
     {m&&<><div className="fg"><label className="fl">Prep ahead</label><textarea className="fta" value={p} onChange={e=>sP(e.target.value)} placeholder="Slice veggies, marinate chicken..."/></div><div className="fg"><label className="fl">Day-of</label><textarea className="fta" value={f} onChange={e=>sF(e.target.value)} placeholder="400°F sheet pan, 20 min..."/></div></>}
     <div className="fg"><label className="fl">Source <small>(optional)</small></label><input className="fi" value={sr} onChange={e=>sSr(e.target.value)} placeholder="NYT Cooking, etc."/></div>
+    <div className="fg"><label className="fl">Tags <small>(comma-separated)</small></label><input className="fi" value={tg} onChange={e=>sTg(e.target.value)} placeholder="quick, pasta, weeknight..."/></div>
     <div className="fg"><label className="fl">Notes <small>(personal tweaks)</small></label><textarea className="fta" style={{minHeight:50}} value={nt} onChange={e=>sNt(e.target.value)} placeholder="e.g. add extra garlic, kids prefer less spice..."/></div>
   </div>
-  <div className="mdl-ft"><button className="btn bg" disabled={!n.trim()} onClick={()=>onSave({name:n.trim(),time:+t||25,servings:+sv||4,ingredients:ig.trim(),prep:p.trim(),finish:f.trim(),source:sr.trim(),notes:nt.trim()})}>{r?"Save":"Add Recipe"}</button></div></>
+  <div className="mdl-ft"><button className="btn bg" disabled={!n.trim()} onClick={()=>onSave({name:n.trim(),time:+t||25,servings:+sv||4,ingredients:ig.trim(),prep:p.trim(),finish:f.trim(),source:sr.trim(),notes:nt.trim(),tags:tg.trim()})}>{r?"Save":"Add Recipe"}</button></div></>
 }
 
 function SupplyForm({s,stores,onSave,onClose}){
