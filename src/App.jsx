@@ -380,24 +380,28 @@ function SimmerApp({user}){
   // ── Load from Supabase on mount, migrate localStorage if needed ──
   useEffect(()=>{
     if(!user?.id||cloudLoaded)return;
+    let timeout=setTimeout(()=>setCloudLoaded(true),5000); // fallback: proceed after 5s even if cloud fails
     (async()=>{
-      const migrated=await migrateLocalToCloud(user.id);
-      const cloud=await dbLoad(user.id);
-      if(cloud&&!migrated){
-        // cloud data exists — use it (overrides localStorage)
-        if(cloud.prefs){const p={...DEF_PREFS,...cloud.prefs};setPrefs(p);sv(LS.p,p);setOnboarded(true);}
-        if(cloud.recipes){setRecipes(cloud.recipes);sv(LS.r,cloud.recipes);}
-        if(cloud.plan){setPlan(cloud.plan);sv(LS.pl,cloud.plan);}
-        if(cloud.nextPlan){setNextPlan(cloud.nextPlan);sv(LS.pl2,cloud.nextPlan);}
-        if(cloud.supplies){setSupplies(cloud.supplies);sv(LS.s,cloud.supplies);}
-        if(cloud.purchases){setPurchases(cloud.purchases);sv(LS.ph,cloud.purchases);}
-        if(cloud.pantry){setPantry(cloud.pantry);sv(LS.pa,cloud.pantry);}
-        if(cloud.ratings){setRatings(cloud.ratings);sv(LS.rt,cloud.ratings);}
-        if(cloud.checked){setChecked(cloud.checked);sv(LS.ck,cloud.checked);}
-        if(cloud.history){setHistory(cloud.history);sv(LS.hi,cloud.history);}
-      }
+      try{
+        const migrated=await migrateLocalToCloud(user.id);
+        const cloud=await dbLoad(user.id);
+        if(cloud&&!migrated){
+          if(cloud.prefs){const p={...DEF_PREFS,...cloud.prefs};setPrefs(p);sv(LS.p,p);setOnboarded(true);}
+          if(cloud.recipes){setRecipes(cloud.recipes);sv(LS.r,cloud.recipes);}
+          if(cloud.plan){setPlan(cloud.plan);sv(LS.pl,cloud.plan);}
+          if(cloud.nextPlan){setNextPlan(cloud.nextPlan);sv(LS.pl2,cloud.nextPlan);}
+          if(cloud.supplies){setSupplies(cloud.supplies);sv(LS.s,cloud.supplies);}
+          if(cloud.purchases){setPurchases(cloud.purchases);sv(LS.ph,cloud.purchases);}
+          if(cloud.pantry){setPantry(cloud.pantry);sv(LS.pa,cloud.pantry);}
+          if(cloud.ratings){setRatings(cloud.ratings);sv(LS.rt,cloud.ratings);}
+          if(cloud.checked){setChecked(cloud.checked);sv(LS.ck,cloud.checked);}
+          if(cloud.history){setHistory(cloud.history);sv(LS.hi,cloud.history);}
+        }
+      }catch(e){console.warn("Cloud load failed, using local data:",e);}
+      clearTimeout(timeout);
       setCloudLoaded(true);
     })();
+    return()=>clearTimeout(timeout);
   },[user?.id,cloudLoaded]);
 
   const flash=m=>{setToast(m);setTimeout(()=>setToast(null),2200)};
